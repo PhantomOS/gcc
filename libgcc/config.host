@@ -274,6 +274,9 @@ case ${host} in
   tmake_file="$tmake_file t-rtems"
   extra_parts="crtbegin.o crtend.o"
   ;;
+*-*-phantom*)
+  extra_parts="crtbegin.o crtend.o"
+  ;;
 *-*-solaris2*)
   # Unless linker support and dl_iterate_phdr are present,
   # unwind-dw2-fde-dip.c automatically falls back to unwind-dw2-fde.c.
@@ -700,6 +703,15 @@ x86_64-*-elf* | x86_64-*-rtems*)
 	    ;;
 	esac
 	;;
+x86_64-*-phantom*)
+    tmake_file="$tmake_file i386/t-crtstuff t-crtstuff-pic t-libgcc-pic"
+	extra_parts="$extra_parts crti.o crtn.o"
+	case ${host} in
+	  x86_64-*-phantom-kernel*)
+        tmake_file="$tmake_file i386/x86_64-phantom-kernel"
+	  ;;
+	esac
+	;;		
 x86_64-*-fuchsia*)
 	tmake_file="$tmake_file t-libgcc-pic"
 	;;
