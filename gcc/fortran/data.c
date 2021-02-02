@@ -1,5 +1,5 @@
 /* Supporting functions for resolving DATA statement.
-   Copyright (C) 2002-2020 Free Software Foundation, Inc.
+   Copyright (C) 2002-2021 Free Software Foundation, Inc.
    Contributed by Lifang Zeng <zlf605@hotmail.com>
 
 This file is part of GCC.
@@ -181,6 +181,19 @@ create_character_initializer (gfc_expr *init, gfc_typespec *ts,
 			   (long) tlen, (long) len);
 	  len = tlen;
 	}
+    }
+
+  if (start < 0)
+    {
+      gfc_error ("Substring start index at %L is less than one",
+		 &ref->u.ss.start->where);
+      return NULL;
+    }
+  if (end > init->value.character.length)
+    {
+      gfc_error ("Substring end index at %L exceeds the string length",
+		 &ref->u.ss.end->where);
+      return NULL;
     }
 
   if (rvalue->ts.type == BT_HOLLERITH)
@@ -576,6 +589,8 @@ gfc_assign_data_value (gfc_expr *lvalue, gfc_expr *rvalue, mpz_t index,
       if (lvalue->ts.u.cl->length == NULL && !(ref && ref->u.ss.length != NULL))
 	return false;
       expr = create_character_initializer (init, last_ts, ref, rvalue);
+      if (!expr)
+	return false;
     }
   else
     {
