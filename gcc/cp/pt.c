@@ -1720,6 +1720,7 @@ spec_hasher::equal (spec_entry *e1, spec_entry *e2)
 
   ++comparing_specializations;
   ++comparing_dependent_aliases;
+  ++processing_template_decl;
   equal = (e1->tmpl == e2->tmpl
 	   && comp_template_args (e1->args, e2->args));
   if (equal && flag_concepts
@@ -1734,6 +1735,7 @@ spec_hasher::equal (spec_entry *e1, spec_entry *e2)
       tree c2 = e2->spec ? get_constraints (e2->spec) : NULL_TREE;
       equal = equivalent_constraints (c1, c2);
     }
+  --processing_template_decl;
   --comparing_dependent_aliases;
   --comparing_specializations;
 
@@ -11569,6 +11571,8 @@ tsubst_attribute (tree t, tree *decl_p, tree args,
     val = tsubst_expr (val, args, complain, in_decl,
 		       /*integral_constant_expression_p=*/false);
 
+  if (val == error_mark_node)
+    return error_mark_node;
   if (val != TREE_VALUE (t))
     return build_tree_list (TREE_PURPOSE (t), val);
   return t;
@@ -11615,9 +11619,10 @@ tsubst_attributes (tree attributes, tree args,
 
 /* Apply any attributes which had to be deferred until instantiation
    time.  DECL_P, ATTRIBUTES and ATTR_FLAGS are as cplus_decl_attributes;
-   ARGS, COMPLAIN, IN_DECL are as tsubst.  */
+   ARGS, COMPLAIN, IN_DECL are as tsubst.  Returns true normally,
+   false on error.  */
 
-static void
+static bool
 apply_late_template_attributes (tree *decl_p, tree attributes, int attr_flags,
 				tree args, tsubst_flags_t complain, tree in_decl)
 {
@@ -11626,12 +11631,12 @@ apply_late_template_attributes (tree *decl_p, tree attributes, int attr_flags,
   tree *p;
 
   if (attributes == NULL_TREE)
-    return;
+    return true;
 
   if (DECL_P (*decl_p))
     {
       if (TREE_TYPE (*decl_p) == error_mark_node)
-	return;
+	return false;
       p = &DECL_ATTRIBUTES (*decl_p);
       /* DECL_ATTRIBUTES comes from copy_node in tsubst_decl, and is identical
          to our attributes parameter.  */
@@ -11666,9 +11671,11 @@ apply_late_template_attributes (tree *decl_p, tree attributes, int attr_flags,
 	  t = *p;
 	  if (ATTR_IS_DEPENDENT (t))
 	    {
+	      *q = tsubst_attribute (t, decl_p, args, complain, in_decl);
+	      if (*q == error_mark_node)
+		return false;
 	      *p = TREE_CHAIN (t);
 	      TREE_CHAIN (t) = NULL_TREE;
-	      *q = tsubst_attribute (t, decl_p, args, complain, in_decl);
 	      while (*q)
 		q = &TREE_CHAIN (*q);
 	    }
@@ -11678,6 +11685,7 @@ apply_late_template_attributes (tree *decl_p, tree attributes, int attr_flags,
 
       cplus_decl_attributes (decl_p, late_attrs, attr_flags);
     }
+  return true;
 }
 
 /* The template TMPL is being instantiated with the template arguments TARGS.
@@ -14046,6 +14054,10 @@ tsubst_function_decl (tree t, tree args, tsubst_flags_t complain,
 			     tsubst (DECL_FRIEND_CONTEXT (t),
 				     args, complain, in_decl));
 
+  if (!apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
+				       args, complain, in_decl))
+    return error_mark_node;
+
   /* Set up the DECL_TEMPLATE_INFO for R.  There's no need to do
      this in the special friend case mentioned above where
      GEN_TMPL is NULL.  */
@@ -14125,8 +14137,6 @@ tsubst_function_decl (tree t, tree args, tsubst_flags_t complain,
       && !processing_template_decl)
     defaulted_late_check (r);
 
-  apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
-				  args, complain, in_decl);
   if (flag_openmp)
     if (tree attr = lookup_attribute ("omp declare variant base",
 				      DECL_ATTRIBUTES (r)))
@@ -14226,7 +14236,9 @@ tsubst_template_decl (tree t, tree args, tsubst_flags_t complain,
   /* The template parameters for this new template are all the
      template parameters for the old template, except the
      outermost level of parameters.  */
+  auto tparm_guard = make_temp_override (current_template_parms);
   DECL_TEMPLATE_PARMS (r)
+    = current_template_parms
     = tsubst_template_parms (DECL_TEMPLATE_PARMS (t), args,
 			     complain);
 
@@ -14489,8 +14501,9 @@ tsubst_decl (tree t, tree args, tsubst_flags_t complain)
             if (!DECL_TEMPLATE_PARM_P (r))
               DECL_ARG_TYPE (r) = type_passed_as (type);
 
-	    apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
-					    args, complain, in_decl);
+	    if (!apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
+						 args, complain, in_decl))
+	      return error_mark_node;
 
             /* Keep track of the first new parameter we
                generate. That's what will be returned to the
@@ -14579,8 +14592,9 @@ tsubst_decl (tree t, tree args, tsubst_flags_t complain)
 	       finish_member_declaration.  */
 	    DECL_CHAIN (r) = NULL_TREE;
 
-	    apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
-					    args, complain, in_decl);
+	    if (!apply_late_template_attributes (&r, DECL_ATTRIBUTES (r), 0,
+						 args, complain, in_decl))
+	      return error_mark_node;
 
 	    if (vec)
 	      TREE_VEC_ELT (vec, i) = r;
@@ -14899,9 +14913,10 @@ tsubst_decl (tree t, tree args, tsubst_flags_t complain)
 
 	DECL_CHAIN (r) = NULL_TREE;
 
-	apply_late_template_attributes (&r, DECL_ATTRIBUTES (r),
-					/*flags=*/0,
-					args, complain, in_decl);
+	if (!apply_late_template_attributes (&r, DECL_ATTRIBUTES (r),
+					     /*flags=*/0,
+					     args, complain, in_decl))
+	  return error_mark_node;
 
 	/* Preserve a typedef that names a type.  */
 	if (is_typedef_decl (r) && type != error_mark_node)
@@ -15189,6 +15204,22 @@ tsubst_exception_specification (tree fntype,
 	     /*integral_constant_expression_p=*/true);
 	}
       new_specs = build_noexcept_spec (new_specs, complain);
+      /* We've instantiated a template before a noexcept-specifier
+	 contained therein has been parsed.  This can happen for
+	 a nested template class:
+
+	  struct S {
+	    template<typename> struct B { B() noexcept(...); };
+	    struct A : B<int> { ... use B() ... };
+	  };
+
+	 where completing B<int> will trigger instantiating the
+	 noexcept, even though we only parse it at the end of S.  */
+      if (UNPARSED_NOEXCEPT_SPEC_P (specs))
+	{
+	  gcc_checking_assert (defer_ok);
+	  vec_safe_push (DEFPARSE_INSTANTIATIONS (expr), new_specs);
+	}
     }
   else if (specs)
     {
@@ -16195,6 +16226,16 @@ tsubst_baselink (tree baselink, tree object_type,
       tree name = OVL_NAME (fns);
       if (IDENTIFIER_CONV_OP_P (name))
 	name = make_conv_op_name (optype);
+
+      /* See maybe_dependent_member_ref.  */
+      if (dependent_scope_p (qualifying_scope))
+	{
+	  if (template_id_p)
+	    name = build2 (TEMPLATE_ID_EXPR, unknown_type_node, name,
+			   template_args);
+	  return build_qualified_name (NULL_TREE, qualifying_scope, name,
+				       /* ::template */false);
+	}
 
       if (name == complete_dtor_identifier)
 	/* Treat as-if non-dependent below.  */
@@ -29231,8 +29272,9 @@ do_class_deduction (tree ptype, tree tmpl, tree init,
 	}
     }
 
-  if (tree guide = maybe_aggr_guide (tmpl, init, args))
-    cands = lookup_add (guide, cands);
+  if (!any_dguides_p)
+    if (tree guide = maybe_aggr_guide (tmpl, init, args))
+      cands = lookup_add (guide, cands);
 
   tree call = error_mark_node;
 
