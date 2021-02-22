@@ -317,6 +317,9 @@ version2string (unsigned version, verstr_t &out)
 /* Include files to note translation for.  */
 static vec<const char *, va_heap, vl_embed> *note_includes;
 
+/* Modules to note CMI pathames.  */
+static vec<const char *, va_heap, vl_embed> *note_cmis;
+
 /* Traits to hash an arbitrary pointer.  Entries are not deletable,
    and removal is a noop (removal needed upon destruction).  */
 template <typename T>
@@ -3547,9 +3550,10 @@ class GTY((chain_next ("%h.parent"), for_user)) module_state {
 			   do it again  */
   bool call_init_p : 1; /* This module's global initializer needs
 			   calling.  */
+  bool inform_read_p : 1; /* Inform of a read.  */
   /* Record extensions emitted or permitted.  */
   unsigned extensions : SE_BITS;
-  /* 12 bits used, 4 bits remain  */
+  /* 13 bits used, 3 bits remain  */
 
  public:
   module_state (tree name, module_state *, bool);
@@ -3782,6 +3786,8 @@ module_state::module_state (tree name, module_state *parent, bool partition)
 
   partition_p = partition;
 
+  inform_read_p = false;
+
   extensions = 0;
   if (name && TREE_CODE (name) == STRING_CST)
     {
@@ -3866,6 +3872,9 @@ module_state_hash::equal (const value_type existing,
 
 /* Mapper name.  */
 static const char *module_mapper_name;
+
+/* Deferred import queue (FIFO).  */
+static vec<module_state *, va_heap, vl_embed> *pending_imports;
 
 /* CMI repository path and workspace.  */
 static char *cmi_repo;
@@ -16566,7 +16575,7 @@ module_state::read_define (bytes_in &sec, cpp_reader *reader, bool located) cons
 }
 
 /* Exported macro data.  */
-struct macro_export {
+struct GTY(()) macro_export {
   cpp_macro *def;
   location_t undef_loc;
 
@@ -16731,7 +16740,7 @@ static vec<macro_import, va_heap, vl_embed> *macro_imports;
    indexes this array.  If the zeroth slot is not for module zero,
    there is no export.  */
 
-static vec<macro_export, va_heap, vl_embed> *macro_exports;
+static GTY(()) vec<macro_export, va_gc> *macro_exports;
 
 /* The reachable set of header imports from this TU.  */
 
@@ -18634,6 +18643,8 @@ module_state::do_import (cpp_reader *reader, bool outermost)
     {
       const char *file = maybe_add_cmi_prefix (filename);
       dump () && dump ("CMI is %s", file);
+      if (note_module_read_yes || inform_read_p)
+	inform (loc, "reading CMI %qs", file);
       fd = open (file, O_RDONLY | O_CLOEXEC | O_BINARY);
       e = errno;
     }
@@ -18936,7 +18947,7 @@ declare_module (module_state *module, location_t from_loc, bool exporting_p,
   gcc_assert (global_namespace == current_scope ());
 
   module_state *current = (*modules)[0];
-  if (module_purview_p () || module->loadedness != ML_NONE)
+  if (module_purview_p () || module->loadedness > ML_CONFIG)
     {
       error_at (from_loc, module_purview_p ()
 		? G_("module already declared")
@@ -19091,7 +19102,7 @@ canonicalize_header_name (cpp_reader *reader, location_t loc, bool unquoted,
       buf[len] = 0;
 
       if (const char *hdr
-	  = cpp_find_header_unit (reader, buf, str[-1] == '<', loc))
+	  = cpp_probe_header_unit (reader, buf, str[-1] == '<', loc))
 	{
 	  len = strlen (hdr);
 	  str = hdr;
@@ -19185,19 +19196,11 @@ maybe_translate_include (cpp_reader *reader, line_maps *lmaps, location_t loc,
   else if (note_include_translate_no && xlate == 0)
     note = true;
   else if (note_includes)
-    {
-      /* We do not expect the note_includes vector to be large, so O(N)
-	 iteration.  */
-      for (unsigned ix = note_includes->length (); !note && ix--;)
-	{
-	  const char *hdr = (*note_includes)[ix];
-	  size_t hdr_len = strlen (hdr);
-	  if ((hdr_len == len
-	       || (hdr_len < len && IS_DIR_SEPARATOR (path[len - hdr_len - 1])))
-	      && !memcmp (hdr, path + len - hdr_len, hdr_len))
-	    note = true;
-	}
-    }
+    /* We do not expect the note_includes vector to be large, so O(N)
+       iteration.  */
+    for (unsigned ix = note_includes->length (); !note && ix--;)
+      if (!strcmp ((*note_includes)[ix], path))
+	note = true;
 
   if (note)
     inform (loc, xlate
@@ -19275,6 +19278,70 @@ module_begin_main_file (cpp_reader *reader, line_maps *lmaps,
     }
 }
 
+/* Process the pending_import queue, making sure we know the
+   filenames.   */
+
+static void
+name_pending_imports (cpp_reader *reader, bool at_end)
+{
+  auto *mapper = get_mapper (cpp_main_loc (reader));
+
+  bool only_headers = (flag_preprocess_only
+		       && !bool (mapper->get_flags () & Cody::Flags::NameOnly)
+		       && !cpp_get_deps (reader));
+  if (at_end
+      && (!vec_safe_length (pending_imports) || only_headers))
+    /* Not doing anything.  */
+    return;
+
+  timevar_start (TV_MODULE_MAPPER);
+
+  dump.push (NULL);
+  dump () && dump ("Resolving direct import names");
+
+  mapper->Cork ();
+  for (unsigned ix = 0; ix != pending_imports->length (); ix++)
+    {
+      module_state *module = (*pending_imports)[ix];
+      gcc_checking_assert (module->is_direct ());
+      if (!module->filename)
+	{
+	  Cody::Flags flags
+	    = (flag_preprocess_only ? Cody::Flags::None
+	       : Cody::Flags::NameOnly);
+
+	  if (only_headers && !module->is_header ())
+	    ;
+	  else if (module->module_p
+		   && (module->is_partition () || module->exported_p))
+	    mapper->ModuleExport (module->get_flatname (), flags);
+	  else
+	    mapper->ModuleImport (module->get_flatname (), flags);
+	}
+    }
+  
+  auto response = mapper->Uncork ();
+  auto r_iter = response.begin ();
+  for (unsigned ix = 0; ix != pending_imports->length (); ix++)
+    {
+      module_state *module = (*pending_imports)[ix];
+      gcc_checking_assert (module->is_direct ());
+      if (only_headers && !module->is_header ())
+	;
+      else if (!module->filename)
+	{
+	  Cody::Packet const &p = *r_iter;
+	  ++r_iter;
+
+	  module->set_filename (p);
+	}
+    }
+
+  dump.pop (0);
+
+  timevar_stop (TV_MODULE_MAPPER);
+}
+
 /* We've just lexed a module-specific control line for MODULE.  Mark
    the module as a direct import, and possibly load up its macro
    state.  Returns the primary module, if this is a module
@@ -19322,17 +19389,22 @@ preprocess_module (module_state *module, location_t from_loc,
 	}
     }
 
+  auto desired = ML_CONFIG;
   if (is_import
-      && !module->is_module () && module->is_header ()
-      && module->loadedness < ML_PREPROCESSOR
+      && module->is_header ()
       && (!cpp_get_options (reader)->preprocessed
 	  || cpp_get_options (reader)->directives_only))
-    {
-      timevar_start (TV_MODULE_IMPORT);
-      unsigned n = dump.push (module);
+    /* We need preprocessor state now.  */
+    desired = ML_PREPROCESSOR;
 
-      if (module->loadedness == ML_NONE)
+  if (!is_import || module->loadedness < desired)
+    {
+      vec_safe_push (pending_imports, module);
+
+      if (desired == ML_PREPROCESSOR)
 	{
+	  name_pending_imports (reader, false);
+
 	  unsigned pre_hwm = 0;
 
 	  /* Preserve the state of the line-map.  */
@@ -19345,25 +19417,38 @@ preprocess_module (module_state *module, location_t from_loc,
 	  spans.maybe_init ();
 	  spans.close ();
 
-	  if (!module->filename)
+	  timevar_start (TV_MODULE_IMPORT);
+
+	  /* Load the config of each pending import -- we must assign
+	     module numbers monotonically.  */
+	  for (unsigned ix = 0; ix != pending_imports->length (); ix++)
 	    {
-	      auto *mapper = get_mapper (cpp_main_loc (reader));
-	      auto packet = mapper->ModuleImport (module->get_flatname ());
-	      module->set_filename (packet);
+	      auto *import = (*pending_imports)[ix];
+	      if (!(import->module_p
+		    && (import->is_partition () || import->exported_p))
+		  && import->loadedness == ML_NONE
+		  && (import->is_header () || !flag_preprocess_only))
+		{
+		  unsigned n = dump.push (import);
+		  import->do_import (reader, true);
+		  dump.pop (n);
+		}
 	    }
-	  module->do_import (reader, true);
+	  vec_free (pending_imports);
 
 	  /* Restore the line-map state.  */
 	  linemap_module_restore (line_table, pre_hwm);
 	  spans.open ();
+
+	  /* Now read the preprocessor state of this particular
+	     import.  */
+	  unsigned n = dump.push (module);
+	  if (module->read_preprocessor (true))
+	    module->import_macros ();
+	  dump.pop (n);
+
+	  timevar_stop (TV_MODULE_IMPORT);
 	}
-
-      if (module->loadedness < ML_PREPROCESSOR)
-	if (module->read_preprocessor (true))
-	  module->import_macros ();
-
-      dump.pop (n);
-      timevar_stop (TV_MODULE_IMPORT);
     }
 
   return is_import ? NULL : get_primary (module);
@@ -19377,68 +19462,13 @@ preprocess_module (module_state *module, location_t from_loc,
 void
 preprocessed_module (cpp_reader *reader)
 {
-  auto *mapper = get_mapper (cpp_main_loc (reader));
+  name_pending_imports (reader, true);
+  vec_free (pending_imports);
 
   spans.maybe_init ();
   spans.close ();
 
-  /* Stupid GTY doesn't grok a typedef here.  And using type = is, too
-     modern.  */
-#define iterator hash_table<module_state_hash>::iterator
-  /* using iterator = hash_table<module_state_hash>::iterator;  */
-
-  /* Walk the module hash, asking for the names of all unknown
-     direct imports and informing of an export (if that's what we
-     are).  Notice these are emitted even when preprocessing as they
-     inform the server of dependency edges.  */
-  timevar_start (TV_MODULE_MAPPER);
-
-  dump.push (NULL);
-  dump () && dump ("Resolving direct import names");
-
-  if (!flag_preprocess_only
-      || bool (mapper->get_flags () & Cody::Flags::NameOnly)
-      || cpp_get_deps (reader))
-    {
-      mapper->Cork ();
-      iterator end = modules_hash->end ();
-      for (iterator iter = modules_hash->begin (); iter != end; ++iter)
-	{
-	  module_state *module = *iter;
-	  if (module->is_direct () && !module->filename)
-	    {
-	      Cody::Flags flags
-		= (flag_preprocess_only ? Cody::Flags::None
-		   : Cody::Flags::NameOnly);
-
-	      if (module->module_p
-		  && (module->is_partition () || module->exported_p))
-		mapper->ModuleExport (module->get_flatname (), flags);
-	      else
-		mapper->ModuleImport (module->get_flatname (), flags);
-	    }
-	}
-
-      auto response = mapper->Uncork ();
-      auto r_iter = response.begin ();
-      for (iterator iter = modules_hash->begin (); iter != end; ++iter)
-	{
-	  module_state *module = *iter;
-
-	  if (module->is_direct () && !module->filename)
-	    {
-	      Cody::Packet const &p = *r_iter;
-	      ++r_iter;
-
-	      module->set_filename (p);
-	    }
-	}
-    }
-
-  dump.pop (0);
-
-  timevar_stop (TV_MODULE_MAPPER);
-
+  using iterator = hash_table<module_state_hash>::iterator;
   if (mkdeps *deps = cpp_get_deps (reader))
     {
       /* Walk the module hash, informing the dependency machinery.  */
@@ -19462,6 +19492,8 @@ preprocessed_module (cpp_reader *reader)
 
   if (flag_header_unit && !flag_preprocess_only)
     {
+      /* Find the main module -- remember, it's not yet in the module
+	 array.  */
       iterator end = modules_hash->end ();
       for (iterator iter = modules_hash->begin (); iter != end; ++iter)
 	{
@@ -19473,7 +19505,6 @@ preprocessed_module (cpp_reader *reader)
 	    }
 	}
     }
-#undef iterator
 }
 
 /* VAL is a global tree, add it to the global vec if it is
@@ -19553,6 +19584,7 @@ init_modules (cpp_reader *reader)
   headers = BITMAP_GGC_ALLOC ();
 
   if (note_includes)
+    /* Canonicalize header names.  */
     for (unsigned ix = 0; ix != note_includes->length (); ix++)
       {
 	const char *hdr = (*note_includes)[ix];
@@ -19570,9 +19602,40 @@ init_modules (cpp_reader *reader)
 					0, !delimed, hdr, len);
 	char *path = XNEWVEC (char, len + 1);
 	memcpy (path, hdr, len);
-	path[len+1] = 0;
+	path[len] = 0;
 
 	(*note_includes)[ix] = path;
+      }
+
+  if (note_cmis)
+    /* Canonicalize & mark module names.  */
+    for (unsigned ix = 0; ix != note_cmis->length (); ix++)
+      {
+	const char *name = (*note_cmis)[ix];
+	size_t len = strlen (name);
+
+	bool is_system = name[0] == '<';
+	bool is_user = name[0] == '"';
+	bool is_pathname = false;
+	if (!(is_system || is_user))
+	  for (unsigned ix = len; !is_pathname && ix--;)
+	    is_pathname = IS_DIR_SEPARATOR (name[ix]);
+	if (is_system || is_user || is_pathname)
+	  {
+	    if (len <= (is_pathname ? 0 : 2)
+		|| (!is_pathname && name[len-1] != (is_system ? '>' : '"')))
+	      {
+		error ("invalid header name %qs", name);
+		continue;
+	      }
+	    else
+	      name = canonicalize_header_name (is_pathname ? nullptr : reader,
+					       0, is_pathname, name, len);
+	  }
+	if (auto module = get_module (name))
+	  module->inform_read_p = 1;
+	else
+	  error ("invalid module name %qs", name);
       }
 
   dump.push (NULL);
@@ -19958,6 +20021,10 @@ handle_module_option (unsigned code, const char *str, int)
 
     case OPT_flang_info_include_translate_:
       vec_safe_push (note_includes, str);
+      return true;
+
+    case OPT_flang_info_module_read_:
+      vec_safe_push (note_cmis, str);
       return true;
 
     default:
