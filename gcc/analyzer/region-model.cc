@@ -741,10 +741,14 @@ region_model::on_assignment (const gassign *assign, region_model_context *ctxt)
 
    Return true if the function call has unknown side effects (it wasn't
    recognized and we don't have a body for it, or are unable to tell which
-   fndecl it is).  */
+   fndecl it is).
+
+   Write true to *OUT_TERMINATE_PATH if this execution path should be
+   terminated (e.g. the function call terminates the process).  */
 
 bool
-region_model::on_call_pre (const gcall *call, region_model_context *ctxt)
+region_model::on_call_pre (const gcall *call, region_model_context *ctxt,
+			   bool *out_terminate_path)
 {
   bool unknown_side_effects = false;
 
@@ -787,6 +791,9 @@ region_model::on_call_pre (const gcall *call, region_model_context *ctxt)
 	    impl_call_memset (cd);
 	    return false;
 	    break;
+	  case BUILT_IN_REALLOC:
+	    impl_call_realloc (cd);
+	    return false;
 	  case BUILT_IN_STRCPY:
 	  case BUILT_IN_STRCPY_CHK:
 	    impl_call_strcpy (cd);
@@ -836,6 +843,25 @@ region_model::on_call_pre (const gcall *call, region_model_context *ctxt)
 	return impl_call_calloc (cd);
       else if (is_named_call_p (callee_fndecl, "alloca", call, 1))
 	return impl_call_alloca (cd);
+      else if (is_named_call_p (callee_fndecl, "realloc", call, 2))
+	{
+	  impl_call_realloc (cd);
+	  return false;
+	}
+      else if (is_named_call_p (callee_fndecl, "error"))
+	{
+	  if (impl_call_error (cd, 3, out_terminate_path))
+	    return false;
+	  else
+	    unknown_side_effects = true;
+	}
+      else if (is_named_call_p (callee_fndecl, "error_at_line"))
+	{
+	  if (impl_call_error (cd, 5, out_terminate_path))
+	    return false;
+	  else
+	    unknown_side_effects = true;
+	}
       else if (is_named_call_p (callee_fndecl, "getchar", call, 0))
 	{
 	  /* No side-effects (tracking stream state is out-of-scope
