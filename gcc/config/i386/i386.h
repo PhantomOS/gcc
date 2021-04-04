@@ -523,6 +523,8 @@ extern unsigned char ix86_tune_features[X86_TUNE_LAST];
 #define TARGET_PROMOTE_QImode	ix86_tune_features[X86_TUNE_PROMOTE_QIMODE]
 #define TARGET_FAST_PREFIX	ix86_tune_features[X86_TUNE_FAST_PREFIX]
 #define TARGET_SINGLE_STRINGOP	ix86_tune_features[X86_TUNE_SINGLE_STRINGOP]
+#define TARGET_PREFER_KNOWN_REP_MOVSB_STOSB \
+  ix86_tune_features[X86_TUNE_PREFER_KNOWN_REP_MOVSB_STOSB]
 #define TARGET_MISALIGNED_MOVE_STRING_PRO_EPILOGUES \
 	ix86_tune_features[X86_TUNE_MISALIGNED_MOVE_STRING_PRO_EPILOGUES]
 #define TARGET_QIMODE_MATH	ix86_tune_features[X86_TUNE_QIMODE_MATH]
@@ -2940,6 +2942,14 @@ struct GTY(()) machine_function {
 
   /* True if the function needs a stack frame.  */
   BOOL_BITFIELD stack_frame_required : 1;
+
+  /* True if __builtin_ia32_vzeroupper () has been expanded in current
+     function.  */
+  BOOL_BITFIELD has_explicit_vzeroupper : 1;
+
+  /* True if we should act silently, rather than raise an error for
+     invalid calls.  */
+  BOOL_BITFIELD silent_p : 1;
 
   /* The largest alignment, in bytes, of stack slot actually used.  */
   unsigned int max_used_stack_alignment;

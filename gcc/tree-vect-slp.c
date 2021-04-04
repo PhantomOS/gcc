@@ -3724,7 +3724,6 @@ vect_slp_analyze_node_operations_1 (vec_info *vinfo, slp_tree node,
 				    stmt_vector_for_cost *cost_vec)
 {
   stmt_vec_info stmt_info = SLP_TREE_REPRESENTATIVE (node);
-  gcc_assert (STMT_SLP_TYPE (stmt_info) != loop_vect);
 
   /* Calculate the number of vector statements to be created for the
      scalar stmts in this node.  For SLP reductions it is equal to the
@@ -3760,6 +3759,7 @@ vect_slp_analyze_node_operations_1 (vec_info *vinfo, slp_tree node,
   if (SLP_TREE_CODE (node) == VEC_PERM_EXPR)
     return vectorizable_slp_permutation (vinfo, NULL, node, cost_vec);
 
+  gcc_assert (STMT_SLP_TYPE (stmt_info) != loop_vect);
   if (is_a <bb_vec_info> (vinfo)
       && !vect_update_shared_vectype (stmt_info, SLP_TREE_VECTYPE (node)))
     {
@@ -3893,7 +3893,7 @@ vect_slp_analyze_node_operations (vec_info *vinfo, slp_tree node,
     {
       if (dump_enabled_p ())
 	dump_printf_loc (MSG_NOTE, vect_location,
-			 "Failed cyclic SLP reference in %p", node);
+			 "Failed cyclic SLP reference in %p\n", node);
       return false;
     }
   gcc_assert (SLP_TREE_DEF_TYPE (node) == vect_internal_def);
@@ -3907,6 +3907,7 @@ vect_slp_analyze_node_operations (vec_info *vinfo, slp_tree node,
   bool res = true;
   unsigned visited_rec_start = visited_vec.length ();
   unsigned cost_vec_rec_start = cost_vec->length ();
+  bool seen_non_constant_child = false;
   FOR_EACH_VEC_ELT (SLP_TREE_CHILDREN (node), i, child)
     {
       res = vect_slp_analyze_node_operations (vinfo, child, node_instance,
@@ -3914,6 +3915,18 @@ vect_slp_analyze_node_operations (vec_info *vinfo, slp_tree node,
 					      cost_vec);
       if (!res)
 	break;
+      if (child && SLP_TREE_DEF_TYPE (child) != vect_constant_def)
+	seen_non_constant_child = true;
+    }
+  /* We're having difficulties scheduling nodes with just constant
+     operands and no scalar stmts since we then cannot compute a stmt
+     insertion place.  */
+  if (!seen_non_constant_child && SLP_TREE_SCALAR_STMTS (node).is_empty ())
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+			 "Cannot vectorize all-constant op node %p\n", node);
+      res = false;
     }
 
   if (res)
