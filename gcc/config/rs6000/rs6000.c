@@ -5765,7 +5765,7 @@ rs6000_machine_from_flags (void)
   HOST_WIDE_INT flags = rs6000_isa_flags;
 
   /* Disable the flags that should never influence the .machine selection.  */
-  flags &= ~(OPTION_MASK_PPC_GFXOPT | OPTION_MASK_PPC_GPOPT);
+  flags &= ~(OPTION_MASK_PPC_GFXOPT | OPTION_MASK_PPC_GPOPT | OPTION_MASK_ISEL);
 
   if ((flags & (ISA_3_1_MASKS_SERVER & ~ISA_3_0_MASKS_SERVER)) != 0)
     return "power10";
@@ -21285,14 +21285,14 @@ rs6000_xcoff_select_section (tree decl, int reloc,
 #if HAVE_AS_TLS
       if (TREE_CODE (decl) == VAR_DECL && DECL_THREAD_LOCAL_P (decl))
 	{
-	  if (TREE_PUBLIC (decl))
-	    return tls_data_section;
-	  else if (bss_initializer_p (decl))
+	  if (bss_initializer_p (decl))
 	    {
 	      /* Convert to COMMON to emit in BSS.  */
 	      DECL_COMMON (decl) = 1;
 	      return tls_comm_section;
 	    }
+	  else if (TREE_PUBLIC (decl))
+	    return tls_data_section;
 	  else
 	    return tls_private_data_section;
 	}
