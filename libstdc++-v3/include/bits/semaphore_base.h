@@ -39,8 +39,10 @@
 #endif // __cpp_lib_atomic_wait
 
 #ifdef _GLIBCXX_HAVE_POSIX_SEMAPHORE
-# include <limits.h>
-# include <semaphore.h>
+# include <exception>	// std::terminate
+# include <cerrno>	// errno, EINTR, EAGAIN etc.
+# include <limits.h>	// SEM_VALUE_MAX
+# include <semaphore.h>	// sem_t, sem_init, sem_wait, sem_post etc.
 #endif
 
 #include <chrono>
@@ -84,6 +86,24 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	  else
 	    break;
 	}
+    }
+
+    _GLIBCXX_ALWAYS_INLINE bool
+    _M_try_acquire() noexcept
+    {
+      for (;;)
+	{
+	  auto __err = sem_trywait(&_M_semaphore);
+	  if (__err && (errno == EINTR))
+	    continue;
+	  else if (__err && (errno == EAGAIN))
+	    return false;
+	  else if (__err)
+	    std::terminate();
+	  else
+	    break;
+	}
+      return true;
     }
 
     _GLIBCXX_ALWAYS_INLINE void
@@ -178,9 +198,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     __atomic_semaphore& operator=(const __atomic_semaphore&) = delete;
 
     static _GLIBCXX_ALWAYS_INLINE bool
-    _S_do_try_acquire(__detail::__platform_wait_t* __counter,
-		      __detail::__platform_wait_t& __old) noexcept
+    _S_do_try_acquire(__detail::__platform_wait_t* __counter) noexcept
     {
+      auto __old = __atomic_impl::load(__counter, memory_order::acquire);
       if (__old == 0)
 	return false;
 
@@ -193,18 +213,16 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     _GLIBCXX_ALWAYS_INLINE void
     _M_acquire() noexcept
     {
-      auto __old = __atomic_impl::load(&_M_counter, memory_order::acquire);
       auto const __pred =
-	[this, &__old] { return _S_do_try_acquire(&this->_M_counter, __old); };
+	[this] { return _S_do_try_acquire(&this->_M_counter); };
       std::__atomic_wait_address_bare(&_M_counter, __pred);
     }
 
     bool
     _M_try_acquire() noexcept
     {
-      auto __old = __atomic_impl::load(&_M_counter, memory_order::acquire);
       auto const __pred =
-	[this, &__old] { return _S_do_try_acquire(&this->_M_counter, __old); };
+	[this] { return _S_do_try_acquire(&this->_M_counter); };
       return std::__detail::__atomic_spin(__pred);
     }
 
@@ -213,9 +231,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       _M_try_acquire_until(const chrono::time_point<_Clock,
 			   _Duration>& __atime) noexcept
       {
-	auto __old = __atomic_impl::load(&_M_counter, memory_order_relaxed);
 	auto const __pred =
-	  [this, &__old] { return _S_do_try_acquire(&this->_M_counter, __old); };
+	  [this] { return _S_do_try_acquire(&this->_M_counter); };
 
 	return __atomic_wait_address_until_bare(&_M_counter, __pred, __atime);
       }
@@ -225,9 +242,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       _M_try_acquire_for(const chrono::duration<_Rep, _Period>& __rtime)
 	noexcept
       {
-	auto __old = __atomic_impl::load(&_M_counter, memory_order_relaxed);
 	auto const __pred =
-	  [this, &__old] { return _S_do_try_acquire(&this->_M_counter, __old); };
+	  [this] { return _S_do_try_acquire(&this->_M_counter); };
 
 	return __atomic_wait_address_for_bare(&_M_counter, __pred, __rtime);
       }
@@ -249,14 +265,12 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
   };
 #endif // __cpp_lib_atomic_wait
 
-// Note: the _GLIBCXX_REQUIRE_POSIX_SEMAPHORE macro can be used to force the
+// Note: the _GLIBCXX_USE_POSIX_SEMAPHORE macro can be used to force the
 // use of Posix semaphores (sem_t). Doing so however, alters the ABI.
-#if defined __cpp_lib_atomic_wait && !_GLIBCXX_REQUIRE_POSIX_SEMAPHORE
+#if defined __cpp_lib_atomic_wait && !_GLIBCXX_USE_POSIX_SEMAPHORE
   using __semaphore_impl = __atomic_semaphore;
 #elif _GLIBCXX_HAVE_POSIX_SEMAPHORE
   using __semaphore_impl = __platform_semaphore;
-#else
-#  error "No suitable semaphore implementation available"
 #endif
 
 _GLIBCXX_END_NAMESPACE_VERSION

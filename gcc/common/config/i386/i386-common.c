@@ -150,6 +150,7 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTION_MASK_ISA_F16C_SET \
   (OPTION_MASK_ISA_F16C | OPTION_MASK_ISA_AVX_SET)
 #define OPTION_MASK_ISA2_MWAITX_SET OPTION_MASK_ISA2_MWAITX
+#define OPTION_MASK_ISA2_MWAIT_SET OPTION_MASK_ISA2_MWAIT
 #define OPTION_MASK_ISA2_CLZERO_SET OPTION_MASK_ISA2_CLZERO
 #define OPTION_MASK_ISA_PKU_SET OPTION_MASK_ISA_PKU
 #define OPTION_MASK_ISA2_RDPID_SET OPTION_MASK_ISA2_RDPID
@@ -245,6 +246,7 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTION_MASK_ISA_XSAVES_UNSET OPTION_MASK_ISA_XSAVES
 #define OPTION_MASK_ISA_CLWB_UNSET OPTION_MASK_ISA_CLWB
 #define OPTION_MASK_ISA2_MWAITX_UNSET OPTION_MASK_ISA2_MWAITX
+#define OPTION_MASK_ISA2_MWAIT_UNSET OPTION_MASK_ISA2_MWAIT
 #define OPTION_MASK_ISA2_CLZERO_UNSET OPTION_MASK_ISA2_CLZERO
 #define OPTION_MASK_ISA_PKU_UNSET OPTION_MASK_ISA_PKU
 #define OPTION_MASK_ISA2_RDPID_UNSET OPTION_MASK_ISA2_RDPID
@@ -1546,6 +1548,19 @@ ix86_handle_option (struct gcc_options *opts,
 	}
       return true;
 
+    case OPT_mmwait:
+      if (value)
+	{
+	  opts->x_ix86_isa_flags2 |= OPTION_MASK_ISA2_MWAIT_SET;
+	  opts->x_ix86_isa_flags2_explicit |= OPTION_MASK_ISA2_MWAIT_SET;
+	}
+      else
+	{
+	  opts->x_ix86_isa_flags2 &= ~OPTION_MASK_ISA2_MWAIT_UNSET;
+	  opts->x_ix86_isa_flags2_explicit |= OPTION_MASK_ISA2_MWAIT_UNSET;
+	}
+      return true;
+
     case OPT_mclzero:
       if (value)
 	{
@@ -1743,13 +1758,13 @@ const char *const processor_names[] =
   "skylake-avx512",
   "cannonlake",
   "icelake-client",
-  "rocketlake",
   "icelake-server",
   "cascadelake",
   "tigerlake",
   "cooperlake",
   "sapphirerapids",
   "alderlake",
+  "rocketlake",
   "intel",
   "geode",
   "k6",
