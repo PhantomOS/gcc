@@ -1,3 +1,84 @@
+2021-05-23  Harald Anlauf  <anlauf@gmx.de>
+
+	PR fortran/100551
+	* trans-expr.c (gfc_conv_procedure_call): Adjust check for
+	implicit conversion of actual argument to an unlimited polymorphic
+	procedure argument.
+
+2021-05-23  Tobias Burnus  <tobias@codesourcery.com>
+
+	* intrinsic.texi (ATOMIC_ADD, ATOMIC_FETCH_ADD): Use the
+	proper variable name in the description.
+
+2021-05-22  Andre Vehreschild  <vehre@gcc.gnu.org>
+	    Steve Kargl  <kargl@gcc.gnu.org>
+
+	PR fortran/98301
+	* trans-decl.c (gfc_build_builtin_function_decls): Move decl.
+	* trans-intrinsic.c (conv_intrinsic_random_init): Use bool for
+	lib-call of caf_random_init instead of logical (4-byte).
+	* trans.h: Add tree var for random_init.
+
+2021-05-20  Marcel Vollweiler  <marcel@codesourcery.com>
+
+	* openmp.c (gfc_match_omp_clauses): Support map-type-modifier 'close'.
+
+2021-05-18  Tobias Burnus  <tobias@codesourcery.com>
+
+	PR fortran/100642
+	* openmp.c (omp_code_to_statement): Add missing EXEC_OMP_DEPOBJ.
+
+2021-05-17  Harald Anlauf  <anlauf@gmx.de>
+
+	PR fortran/98411
+	* trans-decl.c (gfc_finish_var_decl): Add check for explicit SAVE
+	attribute.
+
+2021-05-17  Tobias Burnus  <tobias@codesourcery.com>
+
+	PR fortran/100633
+	* resolve.c (gfc_resolve_code): Reject nonintrinsic assignments in
+	OMP WORKSHARE.
+
+2021-05-14  Tobias Burnus  <tobias@codesourcery.com>
+
+	* dump-parse-tree.c (show_omp_node, show_code_node): Handle
+	EXEC_OMP_PARALLEL_MASTER.
+	* frontend-passes.c (gfc_code_walker): Likewise.
+	* gfortran.h (enum gfc_statement): Add ST_OMP_PARALLEL_MASTER and
+	ST_OMP_END_PARALLEL_MASTER.
+	(enum gfc_exec_op): Add EXEC_OMP_PARALLEL_MASTER..
+	* match.h (gfc_match_omp_parallel_master): Handle it.
+	* openmp.c (gfc_match_omp_parallel_master, resolve_omp_clauses,
+	omp_code_to_statement, gfc_resolve_omp_directive): Likewise.
+	* parse.c (decode_omp_directive, case_exec_markers,
+	gfc_ascii_statement, parse_omp_structured_block,
+	parse_executable): Likewise.
+	* resolve.c (gfc_resolve_blocks, gfc_resolve_code): Likewise.
+	* st.c (gfc_free_statement): Likewise.
+	* trans-openmp.c (gfc_trans_omp_parallel_master,
+	gfc_trans_omp_workshare, gfc_trans_omp_directive): Likewise.
+	* trans.c (trans_code): Likewise.
+
+2021-05-14  Tobias Burnus  <tobias@codesourcery.com>
+
+	* resolve.c (resolve_symbol): Handle implicit SAVE of main-program
+	for vars in 'omp threadprivate' and 'omp declare target'.
+
+2021-05-10  Martin Liska  <mliska@suse.cz>
+
+	* decl.c (variable_decl): Use startswith
+	function instead of strncmp.
+	(gfc_match_end): Likewise.
+	* gfortran.h (gfc_str_startswith): Likewise.
+	* module.c (load_omp_udrs): Likewise.
+	(read_module): Likewise.
+	* options.c (gfc_handle_runtime_check_option): Likewise.
+	* primary.c (match_arg_list_function): Likewise.
+	* trans-decl.c (gfc_get_symbol_decl): Likewise.
+	* trans-expr.c (gfc_conv_procedure_call): Likewise.
+	* trans-intrinsic.c (gfc_conv_ieee_arithmetic_function): Likewise.
+
 2021-05-06  Paul Thomas  <pault@gcc.gnu.org>
 
 	PR fortran/46991

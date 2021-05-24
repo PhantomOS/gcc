@@ -8523,6 +8523,19 @@ expand_constructor (tree exp, rtx target, enum expand_modifier modifier,
       return constructor;
     }
 
+  /* If the CTOR is available in static storage and not mostly
+     zeros and we can move it by pieces prefer to do so since
+     that's usually more efficient than performing a series of
+     stores from immediates.  */
+  if (avoid_temp_mem
+      && TREE_STATIC (exp)
+      && TREE_CONSTANT (exp)
+      && tree_fits_uhwi_p (TYPE_SIZE_UNIT (type))
+      && can_move_by_pieces (tree_to_uhwi (TYPE_SIZE_UNIT (type)),
+			     TYPE_ALIGN (type))
+      && ! mostly_zeros_p (exp))
+    return NULL_RTX;
+
   /* Handle calls that pass values in multiple non-contiguous
      locations.  The Irix 6 ABI has examples of this.  */
   if (target == 0 || ! safe_from_p (target, exp, 1)
@@ -10406,8 +10419,19 @@ expand_expr_real_1 (tree exp, rtx target, machine_mode tmode,
       exp = SSA_NAME_VAR (ssa_name);
       goto expand_decl_rtl;
 
-    case PARM_DECL:
     case VAR_DECL:
+      /* Allow accel compiler to handle variables that require special
+	 treatment, e.g. if they have been modified in some way earlier in
+	 compilation by the adjust_private_decl OpenACC hook.  */
+      if (flag_openacc && targetm.goacc.expand_var_decl)
+	{
+	  temp = targetm.goacc.expand_var_decl (exp);
+	  if (temp)
+	    return temp;
+	}
+      /* ... fall through ...  */
+
+    case PARM_DECL:
       /* If a static var's type was incomplete when the decl was written,
 	 but the type is complete now, lay out the decl now.  */
       if (DECL_SIZE (exp) == 0
@@ -10949,61 +10973,8 @@ expand_expr_real_1 (tree exp, rtx target, machine_mode tmode,
       goto normal_inner_ref;
 
     case COMPONENT_REF:
-      /* If the operand is a CONSTRUCTOR, we can just extract the
-	 appropriate field if it is present.  */
-      if (TREE_CODE (treeop0) == CONSTRUCTOR)
-	{
-	  unsigned HOST_WIDE_INT idx;
-	  tree field, value;
-	  scalar_int_mode field_mode;
-
-	  FOR_EACH_CONSTRUCTOR_ELT (CONSTRUCTOR_ELTS (treeop0),
-				    idx, field, value)
-	    if (field == treeop1
-		/* We can normally use the value of the field in the
-		   CONSTRUCTOR.  However, if this is a bitfield in
-		   an integral mode that we can fit in a HOST_WIDE_INT,
-		   we must mask only the number of bits in the bitfield,
-		   since this is done implicitly by the constructor.  If
-		   the bitfield does not meet either of those conditions,
-		   we can't do this optimization.  */
-		&& (! DECL_BIT_FIELD (field)
-		    || (is_int_mode (DECL_MODE (field), &field_mode)
-			&& (GET_MODE_PRECISION (field_mode)
-			    <= HOST_BITS_PER_WIDE_INT))))
-	      {
-		if (DECL_BIT_FIELD (field)
-		    && modifier == EXPAND_STACK_PARM)
-		  target = 0;
-		op0 = expand_expr (value, target, tmode, modifier);
-		if (DECL_BIT_FIELD (field))
-		  {
-		    HOST_WIDE_INT bitsize = TREE_INT_CST_LOW (DECL_SIZE (field));
-		    scalar_int_mode imode
-		      = SCALAR_INT_TYPE_MODE (TREE_TYPE (field));
-
-		    if (TYPE_UNSIGNED (TREE_TYPE (field)))
-		      {
-			op1 = gen_int_mode ((HOST_WIDE_INT_1 << bitsize) - 1,
-					    imode);
-			op0 = expand_and (imode, op0, op1, target);
-		      }
-		    else
-		      {
-			int count = GET_MODE_PRECISION (imode) - bitsize;
-
-			op0 = expand_shift (LSHIFT_EXPR, imode, op0, count,
-					    target, 0);
-			op0 = expand_shift (RSHIFT_EXPR, imode, op0, count,
-					    target, 0);
-		      }
-		  }
-
-		return op0;
-	      }
-	}
-      goto normal_inner_ref;
-
+      gcc_assert (TREE_CODE (treeop0) != CONSTRUCTOR);
+      /* Fall through.  */
     case BIT_FIELD_REF:
     case ARRAY_RANGE_REF:
     normal_inner_ref:

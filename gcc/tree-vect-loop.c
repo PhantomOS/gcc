@@ -813,7 +813,7 @@ bb_in_loop_p (const_basic_block bb, const void *data)
    stmt_vec_info structs for all the stmts in LOOP_IN.  */
 
 _loop_vec_info::_loop_vec_info (class loop *loop_in, vec_info_shared *shared)
-  : vec_info (vec_info::loop, init_cost (loop_in), shared),
+  : vec_info (vec_info::loop, init_cost (loop_in, false), shared),
     loop (loop_in),
     bbs (XCNEWVEC (basic_block, loop->num_nodes)),
     num_itersm1 (NULL_TREE),
@@ -836,6 +836,7 @@ _loop_vec_info::_loop_vec_info (class loop *loop_in, vec_info_shared *shared)
     single_scalar_iteration_cost (0),
     vec_outside_cost (0),
     vec_inside_cost (0),
+    inner_loop_cost_factor (param_vect_inner_loop_cost_factor),
     vectorizable (false),
     can_use_partial_vectors_p (param_vect_partial_vector_usage != 0),
     using_partial_vectors_p (false),
@@ -1237,7 +1238,7 @@ vect_compute_single_scalar_iteration_cost (loop_vec_info loop_vinfo)
   /* FORNOW.  */
   innerloop_iters = 1;
   if (loop->inner)
-    innerloop_iters = 50; /* FIXME */
+    innerloop_iters = LOOP_VINFO_INNER_LOOP_COST_FACTOR (loop_vinfo);
 
   for (i = 0; i < nbbs; i++)
     {
@@ -1284,7 +1285,7 @@ vect_compute_single_scalar_iteration_cost (loop_vec_info loop_vinfo)
     }
 
   /* Now accumulate cost.  */
-  void *target_cost_data = init_cost (loop);
+  void *target_cost_data = init_cost (loop, true);
   stmt_info_for_cost *si;
   int j;
   FOR_EACH_VEC_ELT (LOOP_VINFO_SCALAR_ITERATION_COST (loop_vinfo),
@@ -2723,7 +2724,7 @@ again:
   /* Reset target cost data.  */
   destroy_cost_data (LOOP_VINFO_TARGET_COST_DATA (loop_vinfo));
   LOOP_VINFO_TARGET_COST_DATA (loop_vinfo)
-    = init_cost (LOOP_VINFO_LOOP (loop_vinfo));
+    = init_cost (LOOP_VINFO_LOOP (loop_vinfo), false);
   /* Reset accumulated rgroup information.  */
   release_vec_loop_controls (&LOOP_VINFO_MASKS (loop_vinfo));
   release_vec_loop_controls (&LOOP_VINFO_LENS (loop_vinfo));

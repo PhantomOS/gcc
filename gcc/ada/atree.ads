@@ -571,8 +571,7 @@ package Atree is
      (N : Entity_Id; Field : Entity_Field) return Boolean;
    --  True if the field value is the initial zero value
 
-   procedure Mutate_Nkind
-     (N : Node_Id; Val : Node_Kind) with Inline;
+   procedure Mutate_Nkind (N : Node_Id; Val : Node_Kind) with Inline;
    --  There is no Set_Nkind in Sinfo.Nodes. We use this instead. This is here,
    --  and has a different name, because it does some extra checking. Nkind is
    --  like a discriminant, in that it controls which fields exist, and that
@@ -653,7 +652,12 @@ package Atree is
       Slot_Size : constant := 32;
       type Slot is mod 2**Slot_Size;
       for Slot'Size use Slot_Size;
-      pragma Provide_Shift_Operators (Slot);
+
+      function Shift_Left (S : Slot; V : Natural) return Slot;
+      pragma Import (Intrinsic, Shift_Left);
+
+      function Shift_Right (S : Slot; V : Natural) return Slot;
+      pragma Import (Intrinsic, Shift_Right);
 
       type Field_1_Bit  is mod 2**1;
       type Field_2_Bit  is mod 2**2;

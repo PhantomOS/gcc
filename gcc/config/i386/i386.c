@@ -752,9 +752,8 @@ x86_64_elf_section_type_flags (tree decl, const char *name, int reloc)
     flags |= SECTION_RELRO;
 
   if (strcmp (name, ".lbss") == 0
-      || strncmp (name, ".lbss.", sizeof (".lbss.") - 1) == 0
-      || strncmp (name, ".gnu.linkonce.lb.",
-		  sizeof (".gnu.linkonce.lb.") - 1) == 0)
+      || startswith (name, ".lbss.")
+      || startswith (name, ".gnu.linkonce.lb."))
     flags |= SECTION_BSS;
 
   return flags;
@@ -17992,21 +17991,24 @@ ix86_gimple_fold_builtin (gimple_stmt_iterator *gsi)
       gcc_assert (n_args == 2);
       arg0 = gimple_call_arg (stmt, 0);
       arg1 = gimple_call_arg (stmt, 1);
-      {
-	location_t loc = gimple_location (stmt);
-	tree type = TREE_TYPE (arg0);
-	tree zero_vec = build_zero_cst (type);
-	tree minus_one_vec = build_minus_one_cst (type);
-	tree cmp_type = truth_type_for (type);
-	gimple_seq stmts = NULL;
-	tree cmp = gimple_build (&stmts, tcode, cmp_type, arg0, arg1);
-	gsi_insert_before (gsi, stmts, GSI_SAME_STMT);
-	gimple *g = gimple_build_assign (gimple_call_lhs (stmt),
-					 VEC_COND_EXPR, cmp,
-					 minus_one_vec, zero_vec);
-	gimple_set_location (g, loc);
-	gsi_replace (gsi, g, false);
-      }
+      if (gimple_call_lhs (stmt))
+	{
+	  location_t loc = gimple_location (stmt);
+	  tree type = TREE_TYPE (arg0);
+	  tree zero_vec = build_zero_cst (type);
+	  tree minus_one_vec = build_minus_one_cst (type);
+	  tree cmp_type = truth_type_for (type);
+	  gimple_seq stmts = NULL;
+	  tree cmp = gimple_build (&stmts, tcode, cmp_type, arg0, arg1);
+	  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	  gimple* g = gimple_build_assign (gimple_call_lhs (stmt),
+					   VEC_COND_EXPR, cmp,
+					   minus_one_vec, zero_vec);
+	  gimple_set_location (g, loc);
+	  gsi_replace (gsi, g, false);
+	}
+      else
+	gsi_replace (gsi, gimple_build_nop (), false);
       return true;
 
     case IX86_BUILTIN_PSLLD:
@@ -19732,6 +19734,7 @@ ix86_division_cost (const struct processor_costs *cost,
 
 static int
 ix86_shift_rotate_cost (const struct processor_costs *cost,
+			enum rtx_code code,
 			enum machine_mode mode, bool constant_op1,
 			HOST_WIDE_INT op1_val,
 			bool speed,
@@ -19768,6 +19771,19 @@ ix86_shift_rotate_cost (const struct processor_costs *cost,
 	    }
 	  else if (TARGET_SSSE3)
 	    count = 7;
+	  return ix86_vec_cost (mode, cost->sse_op * count);
+	}
+      /* V*DImode arithmetic right shift is emulated.  */
+      else if (code == ASHIFTRT
+	       && (mode == V2DImode || mode == V4DImode)
+	       && !TARGET_XOP
+	       && !TARGET_AVX512VL)
+	{
+	  int count = 4;
+	  if (constant_op1 && op1_val == 63 && TARGET_SSE4_2)
+	    count = 2;
+	  else if (constant_op1)
+	    count = 3;
 	  return ix86_vec_cost (mode, cost->sse_op * count);
 	}
       else
@@ -19939,13 +19955,15 @@ ix86_rtx_costs (rtx x, machine_mode mode, int outer_code_i, int opno,
     case LSHIFTRT:
     case ROTATERT:
       bool skip_op0, skip_op1;
-      *total = ix86_shift_rotate_cost (cost, mode, CONSTANT_P (XEXP (x, 1)),
+      *total = ix86_shift_rotate_cost (cost, code, mode,
+				       CONSTANT_P (XEXP (x, 1)),
 				       CONST_INT_P (XEXP (x, 1))
 					 ? INTVAL (XEXP (x, 1)) : -1,
 				       speed,
 				       GET_CODE (XEXP (x, 1)) == AND,
 				       SUBREG_P (XEXP (x, 1))
-				       && GET_CODE (XEXP (XEXP (x, 1), 0)) == AND,
+				       && GET_CODE (XEXP (XEXP (x, 1),
+							  0)) == AND,
 				       &skip_op0, &skip_op1);
       if (skip_op0 || skip_op1)
 	{
@@ -21484,7 +21502,7 @@ ix86_md_asm_adjust (vec<rtx> &outputs, vec<rtx> & /*inputs*/,
   for (unsigned i = 0, n = outputs.length (); i < n; ++i)
     {
       const char *con = constraints[i];
-      if (strncmp (con, "=@cc", 4) != 0)
+      if (!startswith (con, "=@cc"))
 	continue;
       con += 4;
       if (strchr (con, ',') != NULL)
@@ -22289,7 +22307,7 @@ ix86_noce_conversion_profitable_p (rtx_insn *seq, struct noce_if_info *if_info)
 /* Implement targetm.vectorize.init_cost.  */
 
 static void *
-ix86_init_cost (class loop *)
+ix86_init_cost (class loop *, bool)
 {
   unsigned *cost = XNEWVEC (unsigned, 3);
   cost[vect_prologue] = cost[vect_body] = cost[vect_epilogue] = 0;
@@ -22383,11 +22401,16 @@ ix86_add_stmt_cost (class vec_info *vinfo, void *data, int count,
 	case LROTATE_EXPR:
 	case RROTATE_EXPR:
 	  {
+	    tree op1 = gimple_assign_rhs1 (stmt_info->stmt);
 	    tree op2 = gimple_assign_rhs2 (stmt_info->stmt);
 	    stmt_cost = ix86_shift_rotate_cost
-			   (ix86_cost, mode,
+			   (ix86_cost,
+			    (subcode == RSHIFT_EXPR
+			     && !TYPE_UNSIGNED (TREE_TYPE (op1)))
+			    ? ASHIFTRT : LSHIFTRT, mode,
 		            TREE_CODE (op2) == INTEGER_CST,
-			    cst_and_fits_in_hwi (op2) ? int_cst_value (op2) : -1,
+			    cst_and_fits_in_hwi (op2)
+			    ? int_cst_value (op2) : -1,
 		            true, false, false, NULL, NULL);
 	  }
 	  break;
@@ -22462,7 +22485,11 @@ ix86_add_stmt_cost (class vec_info *vinfo, void *data, int count,
      arbitrary and could potentially be improved with analysis.  */
   if (where == vect_body && stmt_info
       && stmt_in_inner_loop_p (vinfo, stmt_info))
-    count *= 50;  /* FIXME.  */
+    {
+      loop_vec_info loop_vinfo = dyn_cast<loop_vec_info> (vinfo);
+      gcc_assert (loop_vinfo);
+      count *= LOOP_VINFO_INNER_LOOP_COST_FACTOR (loop_vinfo); /* FIXME.  */
+    }
 
   retval = (unsigned) (count * stmt_cost);
 

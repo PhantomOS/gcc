@@ -216,6 +216,13 @@ package body Atree is
    --  cannot be used to modify an already-initialized Nkind field. See also
    --  Mutate_Nkind.
 
+   procedure Mutate_Nkind
+     (N : Node_Id; Val : Node_Kind; Old_Size : Field_Offset);
+   --  Called by the other Mutate_Nkind to do all the work. This is needed
+   --  because the call in Change_Node, which calls this one directly, happens
+   --  after zeroing N's slots, which destroys its Nkind, which prevents us
+   --  from properly computing Old_Size.
+
    package Field_Checking is
       function Field_Present
         (Kind : Node_Kind; Field : Node_Field) return Boolean;
@@ -564,7 +571,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          return Field_1_Bit (Shift_Right (S, V) and 1);
       end Get_1_Bit_Val;
@@ -577,7 +584,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          return Field_2_Bit (Shift_Right (S, V) and 3);
       end Get_2_Bit_Val;
@@ -590,7 +597,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          return Field_4_Bit (Shift_Right (S, V) and 15);
       end Get_4_Bit_Val;
@@ -603,7 +610,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          return Field_8_Bit (Shift_Right (S, V) and 255);
       end Get_8_Bit_Val;
@@ -626,7 +633,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset_Write (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          S := (S and not Shift_Left (1, V)) or Shift_Left (Slot (Val), V);
       end Set_1_Bit_Val;
@@ -639,7 +646,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset_Write (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          S := (S and not Shift_Left (3, V)) or Shift_Left (Slot (Val), V);
       end Set_2_Bit_Val;
@@ -652,7 +659,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset_Write (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          S := (S and not Shift_Left (15, V)) or Shift_Left (Slot (Val), V);
       end Set_4_Bit_Val;
@@ -665,7 +672,7 @@ package body Atree is
          pragma Debug (Validate_Node_And_Offset_Write (N, Offset / L));
 
          S : Slot renames Slots.Table (Node_Offsets.Table (N) + Offset / L);
-         V : constant Integer := Integer ((Offset mod L) * (Slot_Size / L));
+         V : constant Natural := Natural ((Offset mod L) * (Slot_Size / L));
       begin
          S := (S and not Shift_Left (255, V)) or Shift_Left (Slot (Val), V);
       end Set_8_Bit_Val;
@@ -868,9 +875,8 @@ package body Atree is
    end Init_Nkind;
 
    procedure Mutate_Nkind
-     (N : Node_Id; Val : Node_Kind)
+     (N : Node_Id; Val : Node_Kind; Old_Size : Field_Offset)
    is
-      Old_Size : constant Field_Offset := Size_In_Slots (N);
       New_Size : constant Field_Offset := Size_In_Slots_To_Alloc (Val);
 
       All_Node_Offsets : Node_Offsets.Table_Type renames
@@ -903,6 +909,11 @@ package body Atree is
 
       Set_Nkind_Type (N, Nkind_Offset, Val);
       pragma Debug (Validate_Node_Write (N));
+   end Mutate_Nkind;
+
+   procedure Mutate_Nkind (N : Node_Id; Val : Node_Kind) is
+   begin
+      Mutate_Nkind (N, Val, Old_Size => Size_In_Slots (N));
    end Mutate_Nkind;
 
    Ekind_Offset : constant Field_Offset :=
@@ -998,13 +1009,19 @@ package body Atree is
       end if;
 
       if New_Size > Old_Size then
-         pragma Debug (Zero_Slots (N));
-         Node_Offsets.Table (N) := Alloc_Slots (New_Size);
+         declare
+            New_Offset : constant Field_Offset := Alloc_Slots (New_Size);
+         begin
+            pragma Debug (Zero_Slots (N));
+            Node_Offsets.Table (N) := New_Offset;
+            Zero_Slots (New_Offset, New_Offset + New_Size - 1);
+         end;
+
+      else
+         Zero_Slots (N);
       end if;
 
-      Zero_Slots (N);
-
-      Mutate_Nkind (N, New_Kind);
+      Mutate_Nkind (N, New_Kind, Old_Size);
 
       Set_Sloc (N, Save_Sloc);
       Set_In_List (N, Save_In_List);
@@ -2125,6 +2142,7 @@ package body Atree is
 
    function Size_In_Slots (N : Node_Or_Entity_Id) return Field_Offset is
    begin
+      pragma Assert (Nkind (N) /= N_Unused_At_Start);
       return
         (if Nkind (N) in N_Entity then Einfo.Entities.Max_Entity_Size
          else Sinfo.Nodes.Size (Nkind (N)));
@@ -2293,14 +2311,15 @@ package body Atree is
       Locked := False;
    end Unlock_Nodes;
 
+   ----------------
+   -- Zero_Slots --
+   ----------------
+
    Zero : constant Slot := 0;
 
    procedure Zero_Slots (F, L : Node_Offset) is
    begin
       Slots.Table (F .. L) := (others => Zero);
-      --  Note that Zero.Field_Size is not stored, because Slot is an
-      --  Unchecked_Union. Hopefully, the compiler can generate efficient code
-      --  for this.
    end Zero_Slots;
 
    procedure Zero_Slots (N : Node_Or_Entity_Id) is

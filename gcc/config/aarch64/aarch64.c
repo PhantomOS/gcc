@@ -1659,7 +1659,7 @@ static const struct tune_params neoversen1_tunings =
   2,	/* min_div_recip_mul_df.  */
   0,	/* max_case_values.  */
   tune_params::AUTOPREFETCHER_WEAK,	/* autoprefetcher_model.  */
-  (AARCH64_EXTRA_TUNE_NONE),	/* tune_flags.  */
+  (AARCH64_EXTRA_TUNE_CHEAP_SHIFT_EXTEND),	/* tune_flags.  */
   &generic_prefetch_tune
 };
 
@@ -14388,7 +14388,7 @@ struct aarch64_vector_costs
 
 /* Implement TARGET_VECTORIZE_INIT_COST.  */
 void *
-aarch64_init_cost (class loop *)
+aarch64_init_cost (class loop *, bool)
 {
   return new aarch64_vector_costs;
 }
@@ -15435,7 +15435,10 @@ aarch64_add_stmt_cost (class vec_info *vinfo, void *data, int count,
 	 arbitrary and could potentially be improved with analysis.  */
       if (where == vect_body && stmt_info
 	  && stmt_in_inner_loop_p (vinfo, stmt_info))
-	count *= 50; /*  FIXME  */
+	{
+	  gcc_assert (loop_vinfo);
+	  count *= LOOP_VINFO_INNER_LOOP_COST_FACTOR (loop_vinfo); /*  FIXME  */
+	}
 
       retval = (unsigned) (count * stmt_cost);
       costs->region[where] += retval;
@@ -17377,7 +17380,7 @@ aarch64_process_one_target_attr (char *arg_str)
   if (*str_to_check == '+')
     return aarch64_handle_attr_isa_flags (str_to_check);
 
-  if (len > 3 && strncmp (str_to_check, "no-", 3) == 0)
+  if (len > 3 && startswith (str_to_check, "no-"))
     {
       invert = true;
       str_to_check += 3;
@@ -17899,7 +17902,14 @@ aarch64_classify_symbol (rtx x, HOST_WIDE_INT offset)
 
       switch (aarch64_cmodel)
 	{
+	case AARCH64_CMODEL_TINY_PIC:
 	case AARCH64_CMODEL_TINY:
+	  /* With -fPIC non-local symbols use the GOT.  For orthogonality
+	     always use the GOT for extern weak symbols.  */
+	  if ((flag_pic || SYMBOL_REF_WEAK (x))
+	      && !aarch64_symbol_binds_local_p (x))
+	    return SYMBOL_TINY_GOT;
+
 	  /* When we retrieve symbol + offset address, we have to make sure
 	     the offset does not cause overflow of the final address.  But
 	     we have no way of knowing the address of symbol at compile time
@@ -17907,40 +17917,28 @@ aarch64_classify_symbol (rtx x, HOST_WIDE_INT offset)
 	     symbol + offset is outside the addressible range of +/-1MB in the
 	     TINY code model.  So we limit the maximum offset to +/-64KB and
 	     assume the offset to the symbol is not larger than +/-(1MB - 64KB).
-	     If offset_within_block_p is true we allow larger offsets.
-	     Furthermore force to memory if the symbol is a weak reference to
-	     something that doesn't resolve to a symbol in this module.  */
-
-	  if (SYMBOL_REF_WEAK (x) && !aarch64_symbol_binds_local_p (x))
-	    return SYMBOL_FORCE_TO_MEM;
+	     If offset_within_block_p is true we allow larger offsets.  */
 	  if (!(IN_RANGE (offset, -0x10000, 0x10000)
 		|| offset_within_block_p (x, offset)))
 	    return SYMBOL_FORCE_TO_MEM;
 
 	  return SYMBOL_TINY_ABSOLUTE;
 
+
+	case AARCH64_CMODEL_SMALL_SPIC:
+	case AARCH64_CMODEL_SMALL_PIC:
 	case AARCH64_CMODEL_SMALL:
+	  if ((flag_pic || SYMBOL_REF_WEAK (x))
+	      && !aarch64_symbol_binds_local_p (x))
+	    return aarch64_cmodel == AARCH64_CMODEL_SMALL_SPIC
+		    ? SYMBOL_SMALL_GOT_28K : SYMBOL_SMALL_GOT_4G;
+
 	  /* Same reasoning as the tiny code model, but the offset cap here is
 	     1MB, allowing +/-3.9GB for the offset to the symbol.  */
-
-	  if (SYMBOL_REF_WEAK (x) && !aarch64_symbol_binds_local_p (x))
-	    return SYMBOL_FORCE_TO_MEM;
 	  if (!(IN_RANGE (offset, -0x100000, 0x100000)
 		|| offset_within_block_p (x, offset)))
 	    return SYMBOL_FORCE_TO_MEM;
 
-	  return SYMBOL_SMALL_ABSOLUTE;
-
-	case AARCH64_CMODEL_TINY_PIC:
-	  if (!aarch64_symbol_binds_local_p (x))
-	    return SYMBOL_TINY_GOT;
-	  return SYMBOL_TINY_ABSOLUTE;
-
-	case AARCH64_CMODEL_SMALL_SPIC:
-	case AARCH64_CMODEL_SMALL_PIC:
-	  if (!aarch64_symbol_binds_local_p (x))
-	    return (aarch64_cmodel == AARCH64_CMODEL_SMALL_SPIC
-		    ?  SYMBOL_SMALL_GOT_28K : SYMBOL_SMALL_GOT_4G);
 	  return SYMBOL_SMALL_ABSOLUTE;
 
 	case AARCH64_CMODEL_LARGE:

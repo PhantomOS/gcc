@@ -278,21 +278,6 @@ get_concept_check_template (tree t)
   return tmpl;
 }
 
-/* Returns true if any of the arguments in the template argument list is
-   a wildcard or wildcard pack.  */
-
-bool
-contains_wildcard_p (tree args)
-{
-  for (int i = 0; i < TREE_VEC_LENGTH (args); ++i)
-    {
-      tree arg = TREE_VEC_ELT (args, i);
-      if (TREE_CODE (arg) == WILDCARD_DECL)
-	return true;
-    }
-  return false;
-}
-
 /*---------------------------------------------------------------------------
                     Resolution of qualified concept names
 ---------------------------------------------------------------------------*/
@@ -1308,18 +1293,6 @@ maybe_substitute_reqs_for (tree reqs, const_tree decl_)
 				tf_warning_or_error, NULL_TREE);
     }
   return reqs;
-}
-
-/* Returns the template-head requires clause for the template
-   declaration T or NULL_TREE if none.  */
-
-tree
-get_template_head_requirements (tree t)
-{
-  tree ci = get_constraints (t);
-  if (!ci)
-    return NULL_TREE;
-  return CI_TEMPLATE_REQS (ci);
 }
 
 /* Returns the trailing requires clause of the declarator of
@@ -2747,6 +2720,7 @@ tsubst_constraint (tree t, tree args, tsubst_flags_t complain, tree in_decl)
   /* We also don't want to evaluate concept-checks when substituting the
      constraint-expressions of a declaration.  */
   processing_constraint_expression_sentinel s;
+  cp_unevaluated u;
   tree expr = tsubst_expr (t, args, complain, in_decl, false);
   return expr;
 }
@@ -3005,7 +2979,10 @@ satisfy_atom (tree t, tree args, sat_info info)
 
   /* Compute the value of the constraint.  */
   if (info.noisy ())
-    result = cxx_constant_value (result);
+    {
+      iloc_sentinel ils (EXPR_LOCATION (result));
+      result = cxx_constant_value (result);
+    }
   else
     {
       result = maybe_constant_value (result, NULL_TREE,
@@ -3465,31 +3442,6 @@ check_function_concept (tree fn)
   return NULL_TREE;
 }
 
-
-// Check that a constrained friend declaration function declaration,
-// FN, is admissible. This is the case only when the declaration depends
-// on template parameters and does not declare a specialization.
-void
-check_constrained_friend (tree fn, tree reqs)
-{
-  if (fn == error_mark_node)
-    return;
-  gcc_assert (TREE_CODE (fn) == FUNCTION_DECL);
-
-  // If there are not constraints, this cannot be an error.
-  if (!reqs)
-    return;
-
-  // Constrained friend functions that don't depend on template
-  // arguments are effectively meaningless.
-  if (!uses_template_parms (TREE_TYPE (fn)))
-    {
-      error_at (location_of (fn),
-		"constrained friend does not depend on template parameters");
-      return;
-    }
-}
-
 /*---------------------------------------------------------------------------
                         Equivalence of constraints
 ---------------------------------------------------------------------------*/
@@ -3516,16 +3468,6 @@ equivalently_constrained (tree d1, tree d2)
 /*---------------------------------------------------------------------------
                      Partial ordering of constraints
 ---------------------------------------------------------------------------*/
-
-/* Returns true when the constraints in A subsume those in B.  */
-
-bool
-subsumes_constraints (tree a, tree b)
-{
-  gcc_assert (!a || TREE_CODE (a) == CONSTRAINT_INFO);
-  gcc_assert (!b || TREE_CODE (b) == CONSTRAINT_INFO);
-  return subsumes (a, b);
-}
 
 /* Returns true when the constraints in CI strictly subsume
    the associated constraints of TMPL.  */

@@ -689,6 +689,10 @@ public:
   /* The cost of the vector loop body.  */
   int vec_inside_cost;
 
+  /* The factor used to over weight those statements in an inner loop
+     relative to the loop being vectorized.  */
+  unsigned int inner_loop_cost_factor;
+
   /* Is the loop vectorizable? */
   bool vectorizable;
 
@@ -807,6 +811,7 @@ public:
 #define LOOP_VINFO_SINGLE_SCALAR_ITERATION_COST(L) (L)->single_scalar_iteration_cost
 #define LOOP_VINFO_ORIG_LOOP_INFO(L)       (L)->orig_loop_info
 #define LOOP_VINFO_SIMD_IF_COND(L)         (L)->simd_if_cond
+#define LOOP_VINFO_INNER_LOOP_COST_FACTOR(L) (L)->inner_loop_cost_factor
 
 #define LOOP_VINFO_FULLY_MASKED_P(L)		\
   (LOOP_VINFO_USING_PARTIAL_VECTORS_P (L)	\
@@ -1455,9 +1460,9 @@ int vect_get_stmt_cost (enum vect_cost_for_stmt type_of_cost)
 /* Alias targetm.vectorize.init_cost.  */
 
 static inline void *
-init_cost (class loop *loop_info)
+init_cost (class loop *loop_info, bool costing_for_scalar)
 {
-  return targetm.vectorize.init_cost (loop_info);
+  return targetm.vectorize.init_cost (loop_info, costing_for_scalar);
 }
 
 extern void dump_stmt_cost (FILE *, void *, int, enum vect_cost_for_stmt,

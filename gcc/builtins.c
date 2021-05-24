@@ -362,15 +362,6 @@ access_ref::get_ref (vec<access_ref> *all_refs,
 	same_ref.offrng[1] = phi_arg_ref.offrng[1];
     }
 
-  if (phi_ref.sizrng[0] < 0)
-    {
-      /* Fail if none of the PHI's arguments resulted in updating PHI_REF
-	 (perhaps because they have all been already visited by prior
-	 recursive calls).  */
-      psnlim->leave_phi (ref);
-      return NULL_TREE;
-    }
-
   if (!same_ref.ref && same_ref.offrng[0] != 0)
     /* Clear BASE0 if not all the arguments refer to the same object and
        if not all their offsets are zero-based.  This allows the final
@@ -388,6 +379,15 @@ access_ref::get_ref (vec<access_ref> *all_refs,
 	 was one.  */
       phi_ref.sizrng[0] = minsize;
       phi_ref.parmarray = parmarray;
+    }
+
+  if (phi_ref.sizrng[0] < 0)
+    {
+      /* Fail if none of the PHI's arguments resulted in updating PHI_REF
+	 (perhaps because they have all been already visited by prior
+	 recursive calls).  */
+      psnlim->leave_phi (ref);
+      return NULL_TREE;
     }
 
   /* Avoid changing *THIS.  */
@@ -924,6 +924,10 @@ bool
 get_object_alignment_1 (tree exp, unsigned int *alignp,
 			unsigned HOST_WIDE_INT *bitposp)
 {
+  /* Strip a WITH_SIZE_EXPR, get_inner_reference doesn't know how to deal
+     with it.  */
+  if (TREE_CODE (exp) == WITH_SIZE_EXPR)
+    exp = TREE_OPERAND (exp, 0);
   return get_object_alignment_2 (exp, alignp, bitposp, false);
 }
 
@@ -4904,6 +4908,8 @@ check_read_access (tree exp, tree src, tree bound /* = NULL_TREE */,
   if (!warn_stringop_overread)
     return true;
 
+  if (bound && !useless_type_conversion_p (size_type_node, TREE_TYPE (bound)))
+    bound = fold_convert (size_type_node, bound);
   access_data data (exp, access_read_only, NULL_TREE, false, bound, true);
   compute_objsize (src, ost, &data.src);
   return check_access (exp, /*dstwrite=*/ NULL_TREE, /*maxread=*/ bound,

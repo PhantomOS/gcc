@@ -89,11 +89,7 @@ extern tree arm_bf16_ptr_type_node;
 
 
 #undef  CPP_SPEC
-#define CPP_SPEC "%(subtarget_cpp_spec)					\
-%{mfloat-abi=soft:%{mfloat-abi=hard:					\
-	%e-mfloat-abi=soft and -mfloat-abi=hard may not be used together}} \
-%{mbig-endian:%{mlittle-endian:						\
-	%e-mbig-endian and -mlittle-endian may not be used together}}"
+#define CPP_SPEC "%(subtarget_cpp_spec)"
 
 #ifndef CC1_SPEC
 #define CC1_SPEC ""

@@ -6120,8 +6120,8 @@ type @code{internal_fn}) should be considered expensive when the mask is
 all zeros.  GCC can then try to branch around the instruction instead.
 @end deftypefn
 
-@deftypefn {Target Hook} {void *} TARGET_VECTORIZE_INIT_COST (class loop *@var{loop_info})
-This hook should initialize target-specific data structures in preparation for modeling the costs of vectorizing a loop or basic block.  The default allocates three unsigned integers for accumulating costs for the prologue, body, and epilogue of the loop or basic block.  If @var{loop_info} is non-NULL, it identifies the loop being vectorized; otherwise a single block is being vectorized.
+@deftypefn {Target Hook} {void *} TARGET_VECTORIZE_INIT_COST (class loop *@var{loop_info}, bool @var{costing_for_scalar})
+This hook should initialize target-specific data structures in preparation for modeling the costs of vectorizing a loop or basic block.  The default allocates three unsigned integers for accumulating costs for the prologue, body, and epilogue of the loop or basic block.  If @var{loop_info} is non-NULL, it identifies the loop being vectorized; otherwise a single block is being vectorized.  If @var{costing_for_scalar} is true, it indicates the current cost model is for the scalar version of a loop or block; otherwise it is for the vector version.
 @end deftypefn
 
 @deftypefn {Target Hook} unsigned TARGET_VECTORIZE_ADD_STMT_COST (class vec_info *@var{}, void *@var{data}, int @var{count}, enum vect_cost_for_stmt @var{kind}, class _stmt_vec_info *@var{stmt_info}, tree @var{vectype}, int @var{misalign}, enum vect_cost_model_location @var{where})
@@ -6234,6 +6234,32 @@ and @samp{@var{ops}[1]} are conditionally added together.
 This hook is only relevant if the target supports conditional patterns
 like @code{cond_add@var{m}}.  The default implementation returns a zero
 constant of type @var{type}.
+@end deftypefn
+
+@deftypefn {Target Hook} tree TARGET_GOACC_ADJUST_PRIVATE_DECL (location_t @var{loc}, tree @var{var}, int @var{level})
+This hook, if defined, is used by accelerator target back-ends to adjust
+OpenACC variable declarations that should be made private to the given
+parallelism level (i.e. @code{GOMP_DIM_GANG}, @code{GOMP_DIM_WORKER} or
+@code{GOMP_DIM_VECTOR}).  A typical use for this hook is to force variable
+declarations at the @code{gang} level to reside in GPU shared memory.
+@var{loc} may be used for diagnostic purposes.
+
+You may also use the @code{TARGET_GOACC_EXPAND_VAR_DECL} hook if the
+adjusted variable declaration needs to be expanded to RTL in a non-standard
+way.
+@end deftypefn
+
+@deftypefn {Target Hook} rtx TARGET_GOACC_EXPAND_VAR_DECL (tree @var{var})
+This hook, if defined, is used by accelerator target back-ends to expand
+specially handled kinds of @code{VAR_DECL} expressions.  A particular use is
+to place variables with specific attributes inside special accelarator
+memories.  A return value of @code{NULL} indicates that the target does not
+handle this @code{VAR_DECL}, and normal RTL expanding is resumed.
+
+Only define this hook if your accelerator target needs to expand certain
+@code{VAR_DECL} nodes in a way that differs from the default.  You can also adjust
+private variables at OpenACC device-lowering time using the
+@code{TARGET_GOACC_ADJUST_PRIVATE_DECL} target hook.
 @end deftypefn
 
 @node Anchored Addresses
