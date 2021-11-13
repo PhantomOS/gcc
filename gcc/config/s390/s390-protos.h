@@ -66,6 +66,8 @@ s390_asm_declare_function_size (FILE *asm_out_file,
 				const char *fnname ATTRIBUTE_UNUSED, tree decl);
 #endif
 
+extern void s390_rawmemchr (machine_mode elt_mode, rtx dst, rtx src, rtx pat);
+
 #ifdef RTX_CODE
 extern int s390_extra_constraint_str (rtx, int, const char *);
 extern int s390_const_ok_for_constraint_p (HOST_WIDE_INT, int, const char *);
@@ -122,6 +124,8 @@ extern void s390_expand_vec_compare_cc (rtx, enum rtx_code, rtx, rtx, bool);
 extern enum rtx_code s390_reverse_condition (machine_mode, enum rtx_code);
 extern void s390_expand_vcond (rtx, rtx, rtx, enum rtx_code, rtx, rtx);
 extern void s390_expand_vec_init (rtx, rtx);
+extern rtx s390_expand_merge_perm_const (machine_mode, bool);
+extern void s390_expand_merge (rtx, rtx, rtx, bool);
 extern rtx s390_build_signbit_mask (machine_mode);
 extern rtx s390_return_addr_rtx (int, rtx);
 extern rtx s390_back_chain_rtx (void);

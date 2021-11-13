@@ -215,7 +215,7 @@ nvptx_option_override (void)
   /* Set toplevel_reorder, unless explicitly disabled.  We need
      reordering so that we emit necessary assembler decls of
      undeclared variables. */
-  if (!global_options_set.x_flag_toplevel_reorder)
+  if (!OPTION_SET_P (flag_toplevel_reorder))
     flag_toplevel_reorder = 1;
 
   debug_nonbind_markers_p = 0;
@@ -223,7 +223,7 @@ nvptx_option_override (void)
   /* Set flag_no_common, unless explicitly disabled.  We fake common
      using .weak, and that's not entirely accurate, so avoid it
      unless forced.  */
-  if (!global_options_set.x_flag_no_common)
+  if (!OPTION_SET_P (flag_no_common))
     flag_no_common = 1;
 
   /* The patch area requires nops, which we don't have.  */
@@ -3205,6 +3205,7 @@ nvptx_mach_vector_length ()
 
 /* Loop structure of the function.  The entire function is described as
    a NULL loop.  */
+/* See also 'gcc/omp-oacc-neuter-broadcast.cc:struct parallel_g'.  */
 
 struct parallel
 {
@@ -3282,6 +3283,7 @@ typedef auto_vec<insn_bb_t> insn_bb_vec_t;
    partitioning mode of the function as a whole.  Populate MAP with
    head and tail blocks.  We also clear the BB visited flag, which is
    used when finding partitions.  */
+/* See also 'gcc/omp-oacc-neuter-broadcast.cc:omp_sese_split_blocks'.  */
 
 static void
 nvptx_split_blocks (bb_insn_map_t *map)
@@ -3383,6 +3385,7 @@ nvptx_discover_pre (basic_block block, int expected)
 }
 
 /* Dump this parallel and all its inner parallels.  */
+/* See also 'gcc/omp-oacc-neuter-broadcast.cc:omp_sese_dump_pars'.  */
 
 static void
 nvptx_dump_pars (parallel *par, unsigned depth)
@@ -3408,6 +3411,7 @@ nvptx_dump_pars (parallel *par, unsigned depth)
 /* If BLOCK contains a fork/join marker, process it to create or
    terminate a loop structure.  Add this block to the current loop,
    and then walk successor blocks.   */
+/* See also 'gcc/omp-oacc-neuter-broadcast.cc:omp_sese_find_par'.  */
 
 static parallel *
 nvptx_find_par (bb_insn_map_t *map, parallel *par, basic_block block)
@@ -3488,6 +3492,7 @@ nvptx_find_par (bb_insn_map_t *map, parallel *par, basic_block block)
    to head & tail markers, discovered when splitting blocks.  This
    speeds up the discovery.  We rely on the BB visited flag having
    been cleared when splitting blocks.  */
+/* See also 'gcc/omp-oacc-neuter-broadcast.cc:omp_sese_discover_pars'.  */
 
 static parallel *
 nvptx_discover_pars (bb_insn_map_t *map)

@@ -42,6 +42,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "function.h"
 #include "dominance.h"
 #include "cfg.h"
+#include "bitmap.h"
 #include "cfganal.h"
 #include "basic-block.h"
 #include "tree-ssa-alias.h"
@@ -581,6 +582,11 @@ test_ranges ()
   push_cfun (fun);
   range_tests ();
   range_op_tests ();
+
+  build_cfg (fndecl);
+  convert_to_ssa (fndecl);
+  gimple_range_tests ();
+
   pop_cfun ();
 }
 

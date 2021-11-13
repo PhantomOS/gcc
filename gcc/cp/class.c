@@ -136,7 +136,6 @@ static bool check_field_decl (tree, tree, int *, int *);
 static void check_field_decls (tree, tree *, int *, int *);
 static void build_base_fields (record_layout_info, splay_tree, tree *);
 static void check_methods (tree);
-static void remove_zero_width_bit_fields (tree);
 static bool accessible_nvdtor_p (tree);
 
 /* Used by find_flexarrays and related functions.  */
@@ -206,6 +205,19 @@ static tree get_vcall_index (tree, tree);
 static bool type_maybe_constexpr_default_constructor (tree);
 static bool type_maybe_constexpr_destructor (tree);
 static bool field_poverlapping_p (tree);
+
+/* Set CURRENT_ACCESS_SPECIFIER based on the protection of DECL.  */
+
+void
+set_current_access_from_decl (tree decl)
+{
+  if (TREE_PRIVATE (decl))
+    current_access_specifier = access_private_node;
+  else if (TREE_PROTECTED (decl))
+    current_access_specifier = access_protected_node;
+  else
+    current_access_specifier = access_public_node;
+}
 
 /* Return a COND_EXPR that executes TRUE_STMT if this execution of the
    'structor is in charge of 'structing virtual bases, or FALSE_STMT
@@ -1359,6 +1371,8 @@ handle_using_decl (tree using_decl, tree t)
 	 CONST_DECL_USING_P is true.  */
       gcc_assert (TREE_CODE (decl) == CONST_DECL);
 
+      auto cas = make_temp_override (current_access_specifier);
+      set_current_access_from_decl (using_decl);
       tree copy = copy_decl (decl);
       DECL_CONTEXT (copy) = t;
       DECL_ARTIFICIAL (copy) = true;
@@ -2376,7 +2390,7 @@ struct find_final_overrider_data {
   /* The candidate overriders.  */
   tree candidates;
   /* Path to most derived.  */
-  vec<tree> path;
+  auto_vec<tree> path;
 };
 
 /* Add the overrider along the current path to FFOD->CANDIDATES.
@@ -2488,8 +2502,6 @@ find_final_overrider (tree derived, tree binfo, tree fn)
 
   dfs_walk_all (derived, dfs_find_final_overrider_pre,
 		dfs_find_final_overrider_post, &ffod);
-
-  ffod.path.release ();
 
   /* If there was no winner, issue an error message.  */
   if (!ffod.candidates || TREE_CHAIN (ffod.candidates))
@@ -3059,8 +3071,7 @@ finish_struct_anon_r (tree field)
     }
 }
 
-/* Check for things that are invalid.  There are probably plenty of other
-   things we should check for also.  */
+/* Fix up any anonymous union/struct members of T.  */
 
 static void
 finish_struct_anon (tree t)
@@ -4205,7 +4216,7 @@ field_poverlapping_p (tree decl)
 bool
 is_empty_field (tree decl)
 {
-  if (TREE_CODE (decl) != FIELD_DECL)
+  if (!decl || TREE_CODE (decl) != FIELD_DECL)
     return false;
 
   bool r = (is_empty_class (TREE_TYPE (decl))
@@ -4623,7 +4634,7 @@ build_base_field (record_layout_info rli, tree binfo, tree access,
 	  DECL_FIELD_OFFSET (decl) = BINFO_OFFSET (binfo);
 	  DECL_FIELD_BIT_OFFSET (decl) = bitsize_zero_node;
 	  SET_DECL_OFFSET_ALIGN (decl, BITS_PER_UNIT);
-	  DECL_FIELD_ABI_IGNORED (decl) = 1;
+	  SET_DECL_FIELD_ABI_IGNORED (decl, 1);
 	}
 
       /* An empty virtual base causes a class to be non-empty
@@ -5444,10 +5455,9 @@ default_init_uninitialized_part (tree type)
       if (r)
 	return r;
     }
-  for (t = TYPE_FIELDS (type); t; t = DECL_CHAIN (t))
-    if (TREE_CODE (t) == FIELD_DECL
-	&& !DECL_ARTIFICIAL (t)
-	&& !DECL_INITIAL (t))
+  for (t = next_initializable_field (TYPE_FIELDS (type)); t;
+       t = next_initializable_field (DECL_CHAIN (t)))
+    if (!DECL_INITIAL (t) && !DECL_ARTIFICIAL (t))
       {
 	r = default_init_uninitialized_part (TREE_TYPE (t));
 	if (r)
@@ -5708,6 +5718,7 @@ type_build_ctor_call (tree t)
       tree fn = *iter;
       if (!DECL_ARTIFICIAL (fn)
 	  || TREE_DEPRECATED (fn)
+	  || TREE_UNAVAILABLE (fn)
 	  || DECL_DELETED_FN (fn))
 	return true;
     }
@@ -5736,35 +5747,11 @@ type_build_dtor_call (tree t)
       tree fn = *iter;
       if (!DECL_ARTIFICIAL (fn)
 	  || TREE_DEPRECATED (fn)
+	  || TREE_UNAVAILABLE (fn)
 	  || DECL_DELETED_FN (fn))
 	return true;
     }
   return false;
-}
-
-/* Remove all zero-width bit-fields from T.  */
-
-static void
-remove_zero_width_bit_fields (tree t)
-{
-  tree *fieldsp;
-
-  fieldsp = &TYPE_FIELDS (t);
-  while (*fieldsp)
-    {
-      if (TREE_CODE (*fieldsp) == FIELD_DECL
-	  && DECL_C_BIT_FIELD (*fieldsp)
-	  /* We should not be confused by the fact that grokbitfield
-	     temporarily sets the width of the bit field into
-	     DECL_BIT_FIELD_REPRESENTATIVE (*fieldsp).
-	     check_bitfield_decl eventually sets DECL_SIZE (*fieldsp)
-	     to that width.  */
-	  && (DECL_SIZE (*fieldsp) == NULL_TREE
-	      || integer_zerop (DECL_SIZE (*fieldsp))))
-	*fieldsp = DECL_CHAIN (*fieldsp);
-      else
-	fieldsp = &DECL_CHAIN (*fieldsp);
-    }
 }
 
 /* Returns TRUE iff we need a cookie when dynamically allocating an
@@ -6131,6 +6118,10 @@ check_bases_and_members (tree t)
 	&& !DECL_ARTIFICIAL (fn)
 	&& DECL_DEFAULTED_IN_CLASS_P (fn))
       {
+	/* ...except handle comparisons later, in finish_struct_1.  */
+	if (special_function_p (fn) == sfk_comparison)
+	  continue;
+
 	int copy = copy_fn_p (fn);
 	if (copy > 0)
 	  {
@@ -6670,7 +6661,7 @@ layout_class_type (tree t, tree *virtuals_p)
 	}
       else if (might_overlap && is_empty_class (type))
 	{
-	  DECL_FIELD_ABI_IGNORED (field) = 1;
+	  SET_DECL_FIELD_ABI_IGNORED (field, 1);
 	  layout_empty_base_or_field (rli, field, empty_base_offsets);
 	}
       else
@@ -6689,7 +6680,7 @@ layout_class_type (tree t, tree *virtuals_p)
 	     laying out an Objective-C class.  The ObjC ABI differs
 	     from the C++ ABI, and so we do not want a warning
 	     here.  */
-	  && !TREE_NO_WARNING (field)
+	  && !warning_suppressed_p (field, OPT_Wabi)
 	  && !last_field_was_bitfield
 	  && !integer_zerop (size_binop (TRUNC_MOD_EXPR,
 					 DECL_FIELD_BIT_OFFSET (field),
@@ -6758,9 +6749,22 @@ layout_class_type (tree t, tree *virtuals_p)
       normalize_rli (rli);
     }
 
-  /* Delete all zero-width bit-fields from the list of fields.  Now
-     that the type is laid out they are no longer important.  */
-  remove_zero_width_bit_fields (t);
+  /* We used to remove zero width bitfields at this point since PR42217,
+     while the C FE never did that.  That caused ABI differences on various
+     targets.  Set the DECL_FIELD_CXX_ZERO_WIDTH_BIT_FIELD flag on them
+     instead, so that the backends can emit -Wpsabi warnings in the cases
+     where the ABI changed.  */
+  for (field = TYPE_FIELDS (t); field; field = DECL_CHAIN (field))
+    if (TREE_CODE (field) == FIELD_DECL
+	&& DECL_C_BIT_FIELD (field)
+	/* We should not be confused by the fact that grokbitfield
+	   temporarily sets the width of the bit field into
+	   DECL_BIT_FIELD_REPRESENTATIVE (field).
+	   check_bitfield_decl eventually sets DECL_SIZE (field)
+	   to that width.  */
+	&& (DECL_SIZE (field) == NULL_TREE
+	    || integer_zerop (DECL_SIZE (field))))
+      SET_DECL_FIELD_CXX_ZERO_WIDTH_BIT_FIELD (field, 1);
 
   if (CLASSTYPE_NON_LAYOUT_POD_P (t) || CLASSTYPE_EMPTY_P (t))
     {
@@ -7466,7 +7470,14 @@ finish_struct_1 (tree t)
      for any static member objects of the type we're working on.  */
   for (x = TYPE_FIELDS (t); x; x = DECL_CHAIN (x))
     if (DECL_DECLARES_FUNCTION_P (x))
-      DECL_IN_AGGR_P (x) = false;
+      {
+	/* Synthesize constexpr defaulted comparisons.  */
+	if (!DECL_ARTIFICIAL (x)
+	    && DECL_DEFAULTED_IN_CLASS_P (x)
+	    && special_function_p (x) == sfk_comparison)
+	  defaulted_late_check (x);
+	DECL_IN_AGGR_P (x) = false;
+      }
     else if (VAR_P (x) && TREE_STATIC (x)
 	     && TREE_TYPE (x) != error_mark_node
 	     && same_type_p (TYPE_MAIN_VARIANT (TREE_TYPE (x)), t))
@@ -8370,7 +8381,7 @@ resolve_address_of_overloaded_function (tree target_type,
       nargs = list_length (target_arg_types);
       args = XALLOCAVEC (tree, nargs);
       for (arg = target_arg_types, ia = 0;
-	   arg != NULL_TREE && arg != void_list_node;
+	   arg != NULL_TREE;
 	   arg = TREE_CHAIN (arg), ++ia)
 	args[ia] = TREE_VALUE (arg);
       nargs = ia;

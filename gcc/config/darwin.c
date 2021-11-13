@@ -42,11 +42,13 @@ along with GCC; see the file COPYING3.  If not see
 #include "explow.h"
 #include "expr.h"
 #include "langhooks.h"
+#include "targhooks.h"
 #include "toplev.h"
 #include "lto-section-names.h"
 #include "intl.h"
 #include "optabs.h"
 #include "flags.h"
+#include "opts.h"
 
 /* Fix and Continue.
 
@@ -108,6 +110,9 @@ static bool ld_uses_coal_sects = false;
 /* Very old (ld_classic) linkers need a symbol to mark the start of
    each FDE.  */
 static bool ld_needs_eh_markers = false;
+
+/* Emit a section-start symbol for mod init and term sections.  */
+static bool ld_init_term_start_labels = false;
 
 /* Section names.  */
 section * darwin_sections[NUM_DARWIN_SECTIONS];
@@ -1054,7 +1059,7 @@ machopic_legitimize_pic_address (rtx orig, machine_mode mode, rtx reg)
 
 int
 machopic_output_data_section_indirection (machopic_indirection **slot,
-					  FILE *asm_out_file)
+					  FILE *out_file)
 {
   machopic_indirection *p = *slot;
 
@@ -1069,7 +1074,7 @@ machopic_output_data_section_indirection (machopic_indirection **slot,
 
   switch_to_section (data_section);
   assemble_align (GET_MODE_ALIGNMENT (Pmode));
-  assemble_label (asm_out_file, ptr_name);
+  assemble_label (out_file, ptr_name);
   assemble_integer (gen_rtx_SYMBOL_REF (Pmode, sym_name),
 		    GET_MODE_SIZE (Pmode),
 		    GET_MODE_ALIGNMENT (Pmode), 1);
@@ -1079,7 +1084,7 @@ machopic_output_data_section_indirection (machopic_indirection **slot,
 
 int
 machopic_output_stub_indirection (machopic_indirection **slot,
-				  FILE *asm_out_file)
+				  FILE *out_file)
 {
   machopic_indirection *p = *slot;
 
@@ -1117,13 +1122,13 @@ machopic_output_stub_indirection (machopic_indirection **slot,
   else
     sprintf (stub, "%s%s", user_label_prefix, ptr_name);
 
-  machopic_output_stub (asm_out_file, sym, stub);
+  machopic_output_stub (out_file, sym, stub);
 
   return 1;
 }
 
 int
-machopic_output_indirection (machopic_indirection **slot, FILE *asm_out_file)
+machopic_output_indirection (machopic_indirection **slot, FILE *out_file)
 {
   machopic_indirection *p = *slot;
 
@@ -1155,18 +1160,18 @@ machopic_output_indirection (machopic_indirection **slot, FILE *asm_out_file)
 	     storage has been allocated.  */
 	  && !TREE_STATIC (decl))
 	{
-	  fputs ("\t.weak_reference ", asm_out_file);
-	  assemble_name (asm_out_file, sym_name);
-	  fputc ('\n', asm_out_file);
+	  fputs ("\t.weak_reference ", out_file);
+	  assemble_name (out_file, sym_name);
+	  fputc ('\n', out_file);
 	}
     }
 
-  assemble_name (asm_out_file, ptr_name);
-  fprintf (asm_out_file, ":\n");
+  assemble_name (out_file, ptr_name);
+  fprintf (out_file, ":\n");
 
-  fprintf (asm_out_file, "\t.indirect_symbol ");
-  assemble_name (asm_out_file, sym_name);
-  fprintf (asm_out_file, "\n");
+  fprintf (out_file, "\t.indirect_symbol ");
+  assemble_name (out_file, sym_name);
+  fprintf (out_file, "\n");
 
   /* Variables that are marked with MACHO_SYMBOL_FLAG_STATIC need to
      have their symbol name instead of 0 in the second entry of
@@ -1186,7 +1191,7 @@ machopic_output_indirection (machopic_indirection **slot, FILE *asm_out_file)
 }
 
 static void
-machopic_finish (FILE *asm_out_file)
+machopic_finish (FILE *out_file)
 {
   if (!machopic_indirections)
     return;
@@ -1194,13 +1199,13 @@ machopic_finish (FILE *asm_out_file)
   /* First output an symbol indirections that have been placed into .data
      (we don't expect these now).  */
   machopic_indirections->traverse_noresize
-    <FILE *, machopic_output_data_section_indirection> (asm_out_file);
+    <FILE *, machopic_output_data_section_indirection> (out_file);
 
   machopic_indirections->traverse_noresize
-    <FILE *, machopic_output_stub_indirection> (asm_out_file);
+    <FILE *, machopic_output_stub_indirection> (out_file);
 
   machopic_indirections->traverse_noresize
-    <FILE *, machopic_output_indirection> (asm_out_file);
+    <FILE *, machopic_output_indirection> (out_file);
 }
 
 int
@@ -1838,6 +1843,11 @@ finalize_ctors ()
   else
     switch_to_section (darwin_sections[constructor_section]);
 
+  /* Where needed, provide a linker-visible section-start symbol so that we
+     have stable output between debug and non-debug.  */
+  if (ld_init_term_start_labels)
+    fputs (MACHOPIC_INDIRECT ? "_Mod.init:\n" : "_CTOR.sect:\n", asm_out_file);
+
   if (vec_safe_length (ctors) > 1)
     ctors->qsort (sort_cdtor_records);
   FOR_EACH_VEC_SAFE_ELT (ctors, i, elt)
@@ -1857,6 +1867,11 @@ finalize_dtors ()
     switch_to_section (darwin_sections[mod_term_section]);
   else
     switch_to_section (darwin_sections[destructor_section]);
+
+  /* Where needed, provide a linker-visible section-start symbol so that we
+     have stable output between debug and non-debug.  */
+  if (ld_init_term_start_labels)
+    fputs (MACHOPIC_INDIRECT ? "_Mod.term:\n" : "_DTOR.sect:\n", asm_out_file);
 
   if (vec_safe_length (dtors) > 1)
     dtors->qsort (sort_cdtor_records);
@@ -3129,6 +3144,14 @@ darwin_file_end (void)
      re-arranging data.  */
   if (!DARWIN_SECTION_ANCHORS || !flag_section_anchors)
     fprintf (asm_out_file, "\t.subsections_via_symbols\n");
+
+  /* We rely on this being NULL at the start of compilation; reset it here
+     so that JIT can reuse a context.  */
+  if (dwarf_sect_names_table != NULL)
+    {
+      dwarf_sect_names_table->truncate (0);
+      dwarf_sect_names_table = NULL;
+    }
 }
 
 /* TODO: Add a language hook for identifying if a decl is a vtable.  */
@@ -3220,11 +3243,25 @@ darwin_override_options (void)
       /* Earlier versions are not specifically accounted, until required.  */
     }
 
-  /* Older Darwin ld could not coalesce weak entities without them being
-     placed in special sections.  */
-  if (darwin_target_linker
-      && (strverscmp (darwin_target_linker, MIN_LD64_NO_COAL_SECTS) < 0))
-    ld_uses_coal_sects = true;
+  /* Some codegen needs to account for the capabilities of the target
+     linker.  */
+  if (darwin_target_linker)
+    {
+      /* Older Darwin ld could not coalesce weak entities without them being
+	 placed in special sections.  */
+      if (strverscmp (darwin_target_linker, MIN_LD64_NO_COAL_SECTS) < 0)
+	ld_uses_coal_sects = true;
+
+      /* Some newer assemblers emit section start temp symbols for mod init
+	 and term sections if there is no suitable symbol present already.
+	 The temp symbols are linker visible and therefore appear in the
+	 symbol tables.  Since the temp symbol number can vary when debug is
+	 enabled, that causes compare-debug fails.  The solution is to provide
+	 a stable linker-visible symbol.  */
+      if (strverscmp (darwin_target_linker,
+		      MIN_LD64_INIT_TERM_START_LABELS) >= 0)
+	ld_init_term_start_labels = true;
+    }
 
   /* In principle, this should be c-family only.  However, we really need to
      set sensible defaults for LTO as well, since the section selection stuff
@@ -3246,7 +3283,7 @@ darwin_override_options (void)
     }
 
   /* Unless set, force ABI=2 for NeXT and m64, 0 otherwise.  */
-  if (!global_options_set.x_flag_objc_abi)
+  if (!OPTION_SET_P (flag_objc_abi))
     global_options.x_flag_objc_abi
 	= (!flag_next_runtime)
 		? 0
@@ -3254,7 +3291,7 @@ darwin_override_options (void)
 				: (generating_for_darwin_version >= 9) ? 1
 								       : 0);
 
-  if (global_options_set.x_flag_objc_abi && flag_next_runtime)
+  if (OPTION_SET_P (flag_objc_abi) && flag_next_runtime)
     {
       if (TARGET_64BIT && global_options.x_flag_objc_abi != 2)
 	/* The Objective-C family ABI 2 is the only valid version NeXT/m64.  */
@@ -3271,23 +3308,23 @@ darwin_override_options (void)
 
   /* Don't emit DWARF3/4 unless specifically selected.  This is a
      workaround for tool bugs.  */
-  if (!global_options_set.x_dwarf_strict)
+  if (!OPTION_SET_P (dwarf_strict))
     dwarf_strict = 1;
-  if (!global_options_set.x_dwarf_version)
+  if (!OPTION_SET_P (dwarf_version))
     dwarf_version = 2;
 
-  if (global_options_set.x_dwarf_split_debug_info)
+  if (OPTION_SET_P (dwarf_split_debug_info))
     {
       inform (input_location,
 	      "%<-gsplit-dwarf%> is not supported on this platform, ignored");
       dwarf_split_debug_info = 0;
-      global_options_set.x_dwarf_split_debug_info = 0;
+      OPTION_SET_P (dwarf_split_debug_info) = 0;
     }
 
   /* Do not allow unwind tables to be generated by default for m32.
      fnon-call-exceptions will override this, regardless of what we do.  */
   if (generating_for_darwin_version < 10
-      && !global_options_set.x_flag_asynchronous_unwind_tables
+      && !OPTION_SET_P (flag_asynchronous_unwind_tables)
       && !TARGET_64BIT)
     global_options.x_flag_asynchronous_unwind_tables = 0;
 
@@ -3298,15 +3335,15 @@ darwin_override_options (void)
       will be generated".  If the User specifically sets flags... we assume
       (s)he knows why...  */
    if (generating_for_darwin_version < 9
-       && global_options_set.x_flag_reorder_blocks_and_partition
+       && OPTION_SET_P (flag_reorder_blocks_and_partition)
        && ((global_options.x_flag_exceptions 		/* User, c++, java */
-	    && !global_options_set.x_flag_exceptions) 	/* User specified... */
+	    && !OPTION_SET_P (flag_exceptions)) 	/* User specified... */
 	   || (global_options.x_flag_unwind_tables
-	       && !global_options_set.x_flag_unwind_tables)
+	       && !OPTION_SET_P (flag_unwind_tables))
 	   || (global_options.x_flag_non_call_exceptions
-	       && !global_options_set.x_flag_non_call_exceptions)
+	       && !OPTION_SET_P (flag_non_call_exceptions))
 	   || (global_options.x_flag_asynchronous_unwind_tables
-	       && !global_options_set.x_flag_asynchronous_unwind_tables)))
+	       && !OPTION_SET_P (flag_asynchronous_unwind_tables))))
     {
       inform (input_location,
 	      "%<-freorder-blocks-and-partition%> does not work with "
@@ -3317,12 +3354,12 @@ darwin_override_options (void)
 
     /* FIXME: flag_objc_sjlj_exceptions is no longer needed since there is only
        one valid choice of exception scheme for each runtime.  */
-    if (!global_options_set.x_flag_objc_sjlj_exceptions)
+    if (!OPTION_SET_P (flag_objc_sjlj_exceptions))
       global_options.x_flag_objc_sjlj_exceptions =
 				flag_next_runtime && !TARGET_64BIT;
 
     /* FIXME: and this could be eliminated then too.  */
-    if (!global_options_set.x_flag_exceptions
+    if (!OPTION_SET_P (flag_exceptions)
 	&& flag_objc_exceptions
 	&& TARGET_64BIT)
       flag_exceptions = 1;
@@ -3378,7 +3415,7 @@ darwin_override_options (void)
      Linkers that don't need stubs, don't need the EH symbol markers either.
   */
 
-  if (!global_options_set.x_darwin_symbol_stubs)
+  if (!OPTION_SET_P (darwin_symbol_stubs))
     {
       if (darwin_target_linker)
 	{
@@ -3626,19 +3663,22 @@ darwin_rename_builtins (void)
     }
 }
 
+/* Implementation for the TARGET_LIBC_HAS_FUNCTION hook.  */
+
 bool
 darwin_libc_has_function (enum function_class fn_class,
 			  tree type ATTRIBUTE_UNUSED)
 {
-  if (fn_class == function_sincos)
+  if (fn_class == function_sincos && darwin_macosx_version_min)
     return (strverscmp (darwin_macosx_version_min, "10.9") >= 0);
-
+#if DARWIN_PPC && SUPPORT_DARWIN_LEGACY
   if (fn_class == function_c99_math_complex
       || fn_class == function_c99_misc)
     return (TARGET_64BIT
-	    || strverscmp (darwin_macosx_version_min, "10.3") >= 0);
-
-  return true;
+	    || (darwin_macosx_version_min &&
+		strverscmp (darwin_macosx_version_min, "10.3") >= 0));
+#endif
+  return default_libc_has_function (fn_class, type);
 }
 
 hashval_t

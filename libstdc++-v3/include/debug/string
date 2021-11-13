@@ -201,15 +201,7 @@ namespace __gnu_debug
 		  __glibcxx_check_valid_constructor_range(__begin, __end)),
 		__gnu_debug::__base(__end), __a) { }
 
-#if __cplusplus < 201103L
-      basic_string&
-      operator=(const basic_string& __str)
-      {
-	this->_M_safe() = __str;
-	_M_base() = __str;
-	return *this;
-      }
-#else
+#if __cplusplus >= 201103L
       basic_string&
       operator=(const basic_string&) = default;
 
@@ -1298,9 +1290,7 @@ namespace __gnu_debug
 
   typedef basic_string<char>    string;
 
-#ifdef _GLIBCXX_USE_WCHAR_T
   typedef basic_string<wchar_t> wstring;
-#endif
 
 #ifdef _GLIBCXX_USE_CHAR8_T
   /// A string of @c char8_t

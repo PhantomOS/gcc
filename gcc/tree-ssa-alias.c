@@ -2594,14 +2594,18 @@ modref_may_conflict (const gimple *stmt,
 	      if (num_tests >= max_tests)
 		return true;
 
-	      if (access_node->parm_index == -1
-		  || (unsigned)access_node->parm_index
-		     >= gimple_call_num_args (stmt))
+	      if (access_node->parm_index == MODREF_UNKNOWN_PARM
+		  || access_node->parm_index
+		     >= (int)gimple_call_num_args (stmt))
 		return true;
 
 	      alias_stats.modref_baseptr_tests++;
+	      tree arg;
 
-	      tree arg = gimple_call_arg (stmt, access_node->parm_index);
+	      if (access_node->parm_index == MODREF_STATIC_CHAIN_PARM)
+		arg = gimple_call_chain (stmt);
+	      else
+		arg = gimple_call_arg (stmt, access_node->parm_index);
 
 	      if (integer_zerop (arg) && flag_delete_null_pointer_checks)
 		continue;
@@ -2870,7 +2874,7 @@ process_args:
       tree op = gimple_call_arg (call, i);
       int flags = gimple_call_arg_flags (call, i);
 
-      if (flags & EAF_UNUSED)
+      if (flags & (EAF_UNUSED | EAF_NO_DIRECT_READ))
 	continue;
 
       if (TREE_CODE (op) == WITH_SIZE_EXPR)
@@ -3745,7 +3749,7 @@ walk_non_aliased_vuses (ao_ref *ref, tree vuse, bool tbaa_p,
 }
 
 
-/* Based on the memory reference REF call WALKER for each vdef which
+/* Based on the memory reference REF call WALKER for each vdef whose
    defining statement may clobber REF, starting with VDEF.  If REF
    is NULL_TREE, each defining statement is visited.
 
@@ -3755,8 +3759,8 @@ walk_non_aliased_vuses (ao_ref *ref, tree vuse, bool tbaa_p,
    If function entry is reached, FUNCTION_ENTRY_REACHED is set to true.
    The pointer may be NULL and then we do not track this information.
 
-   At PHI nodes walk_aliased_vdefs forks into one walk for reach
-   PHI argument (but only one walk continues on merge points), the
+   At PHI nodes walk_aliased_vdefs forks into one walk for each
+   PHI argument (but only one walk continues at merge points), the
    return value is true if any of the walks was successful.
 
    The function returns the number of statements walked or -1 if
@@ -3895,7 +3899,7 @@ attr_fnspec::verify ()
 		    && str[idx] != 'w' && str[idx] != 'W'
 		    && str[idx] != 'o' && str[idx] != 'O')
 		  err = true;
-		if (str[idx] != 't'
+		if (str[idx + 1] != 't'
 		    /* Size specified is scalar, so it should be described
 		       by ". " if specified at all.  */
 		    && (arg_specified_p (str[idx + 1] - '1')

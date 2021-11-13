@@ -270,6 +270,31 @@ struct processor_costs leon3_costs = {
 };
 
 static const
+struct processor_costs leon5_costs = {
+  COSTS_N_INSNS (1), /* int load */
+  COSTS_N_INSNS (1), /* int signed load */
+  COSTS_N_INSNS (1), /* int zeroed load */
+  COSTS_N_INSNS (1), /* float load */
+  COSTS_N_INSNS (1), /* fmov, fneg, fabs */
+  COSTS_N_INSNS (1), /* fadd, fsub */
+  COSTS_N_INSNS (1), /* fcmp */
+  COSTS_N_INSNS (1), /* fmov, fmovr */
+  COSTS_N_INSNS (1), /* fmul */
+  COSTS_N_INSNS (17), /* fdivs */
+  COSTS_N_INSNS (18), /* fdivd */
+  COSTS_N_INSNS (25), /* fsqrts */
+  COSTS_N_INSNS (26), /* fsqrtd */
+  COSTS_N_INSNS (4), /* imul */
+  COSTS_N_INSNS (4), /* imulX */
+  0, /* imul bit factor */
+  COSTS_N_INSNS (35), /* idiv */
+  COSTS_N_INSNS (35), /* idivX */
+  COSTS_N_INSNS (1), /* movcc/movr */
+  0, /* shift penalty */
+  3 /* branch cost */
+};
+
+static const
 struct processor_costs sparclet_costs = {
   COSTS_N_INSNS (3), /* int load */
   COSTS_N_INSNS (3), /* int signed load */
@@ -507,25 +532,6 @@ static const struct processor_costs *sparc_costs = &cypress_costs;
   ((TARGET_ARCH64 && !TARGET_CM_MEDLOW) || flag_pic)
 #endif
 
-/* Vector to say how input registers are mapped to output registers.
-   HARD_FRAME_POINTER_REGNUM cannot be remapped by this function to
-   eliminate it.  You must use -fomit-frame-pointer to get that.  */
-char leaf_reg_remap[] =
-{ 0, 1, 2, 3, 4, 5, 6, 7,
-  -1, -1, -1, -1, -1, -1, 14, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1,
-  8, 9, 10, 11, 12, 13, -1, 15,
-
-  32, 33, 34, 35, 36, 37, 38, 39,
-  40, 41, 42, 43, 44, 45, 46, 47,
-  48, 49, 50, 51, 52, 53, 54, 55,
-  56, 57, 58, 59, 60, 61, 62, 63,
-  64, 65, 66, 67, 68, 69, 70, 71,
-  72, 73, 74, 75, 76, 77, 78, 79,
-  80, 81, 82, 83, 84, 85, 86, 87,
-  88, 89, 90, 91, 92, 93, 94, 95,
-  96, 97, 98, 99, 100, 101, 102};
-
 /* Vector, indexed by hard register number, which contains 1
    for a register that is allowable in a candidate for leaf
    function treatment.  */
@@ -594,6 +600,7 @@ static int function_arg_slotno (const CUMULATIVE_ARGS *, machine_mode,
 
 static int supersparc_adjust_cost (rtx_insn *, int, rtx_insn *, int);
 static int hypersparc_adjust_cost (rtx_insn *, int, rtx_insn *, int);
+static int leon5_adjust_cost (rtx_insn *, int, rtx_insn *, int);
 
 static void sparc_emit_set_const32 (rtx, rtx);
 static void sparc_emit_set_const64 (rtx, rtx);
@@ -963,6 +970,17 @@ char sparc_hard_reg_printed[8];
 #undef TARGET_ZERO_CALL_USED_REGS
 #define TARGET_ZERO_CALL_USED_REGS sparc_zero_call_used_regs
 
+#ifdef SPARC_GCOV_TYPE_SIZE
+static HOST_WIDE_INT
+sparc_gcov_type_size (void)
+{
+  return SPARC_GCOV_TYPE_SIZE;
+}
+
+#undef TARGET_GCOV_TYPE_SIZE
+#define TARGET_GCOV_TYPE_SIZE sparc_gcov_type_size
+#endif
+
 struct gcc_target targetm = TARGET_INITIALIZER;
 
 /* Return the memory reference contained in X if any, zero otherwise.  */
@@ -1053,6 +1071,43 @@ atomic_insn_for_leon3_p (rtx_insn *insn)
     }
 }
 
+/* True if INSN is a store instruction.  */
+
+static bool
+store_insn_p (rtx_insn *insn)
+{
+  if (GET_CODE (PATTERN (insn)) != SET)
+    return false;
+
+  switch (get_attr_type (insn))
+    {
+    case TYPE_STORE:
+    case TYPE_FPSTORE:
+      return true;
+    default:
+      return false;
+    }
+}
+
+/* True if INSN is a load instruction.  */
+
+static bool
+load_insn_p (rtx_insn *insn)
+{
+  if (GET_CODE (PATTERN (insn)) != SET)
+    return false;
+
+  switch (get_attr_type (insn))
+    {
+    case TYPE_LOAD:
+    case TYPE_SLOAD:
+    case TYPE_FPLOAD:
+      return true;
+    default:
+      return false;
+    }
+}
+
 /* We use a machine specific pass to enable workarounds for errata.
 
    We need to have the (essentially) final form of the insn stream in order
@@ -1065,10 +1120,29 @@ atomic_insn_for_leon3_p (rtx_insn *insn)
    && GET_CODE (PATTERN (INSN)) != USE					\
    && GET_CODE (PATTERN (INSN)) != CLOBBER)
 
+rtx_insn *
+next_active_non_empty_insn (rtx_insn *insn)
+{
+  insn = next_active_insn (insn);
+
+  while (insn
+	 && (GET_CODE (PATTERN (insn)) == UNSPEC_VOLATILE
+	     || GET_CODE (PATTERN (insn)) == ASM_INPUT
+	     || (USEFUL_INSN_P (insn)
+		 && (asm_noperands (PATTERN (insn)) >= 0)
+		 && !strcmp (decode_asm_operands (PATTERN (insn),
+						  NULL, NULL, NULL,
+						  NULL, NULL), ""))))
+    insn = next_active_insn (insn);
+
+  return insn;
+}
+
 static unsigned int
 sparc_do_work_around_errata (void)
 {
   rtx_insn *insn, *next;
+  bool find_first_useful = true;
 
   /* Force all instructions to be split into their final form.  */
   split_all_insns_noflow ();
@@ -1093,6 +1167,16 @@ sparc_do_work_around_errata (void)
       else
 	jump = NULL;
 
+      /* Do not begin function with atomic instruction.  */
+      if (sparc_fix_ut700
+	  && find_first_useful
+	  && USEFUL_INSN_P (insn))
+	{
+	  find_first_useful = false;
+	  if (atomic_insn_for_leon3_p (insn))
+	    emit_insn_before (gen_nop (), insn);
+	}
+
       /* Place a NOP at the branch target of an integer branch if it is a
 	 floating-point operation or a floating-point branch.  */
       if (sparc_fix_gr712rc
@@ -1113,9 +1197,7 @@ sparc_do_work_around_errata (void)
 	 instruction at branch target.  */
       if (sparc_fix_ut700
 	  && NONJUMP_INSN_P (insn)
-	  && (set = single_set (insn)) != NULL_RTX
-	  && mem_ref (SET_SRC (set))
-	  && REG_P (SET_DEST (set)))
+	  && load_insn_p (insn))
 	{
 	  if (jump && jump_to_label_p (jump))
 	    {
@@ -1124,7 +1206,7 @@ sparc_do_work_around_errata (void)
 		emit_insn_before (gen_nop (), target);
 	    }
 
-	  next = next_active_insn (insn);
+	  next = next_active_non_empty_insn (insn);
 	  if (!next)
 	    break;
 
@@ -1220,30 +1302,19 @@ sparc_do_work_around_errata (void)
       if (sparc_fix_b2bst
 	  && NONJUMP_INSN_P (insn)
 	  && (set = single_set (insn)) != NULL_RTX
-	  && MEM_P (SET_DEST (set)))
+	  && store_insn_p (insn))
 	{
 	  /* Sequence B begins with a double-word store.  */
 	  bool seq_b = GET_MODE_SIZE (GET_MODE (SET_DEST (set))) == 8;
 	  rtx_insn *after;
 	  int i;
 
-	  next = next_active_insn (insn);
+	  next = next_active_non_empty_insn (insn);
 	  if (!next)
 	    break;
 
 	  for (after = next, i = 0; i < 2; i++)
 	    {
-	      /* Skip empty assembly statements.  */
-	      if ((GET_CODE (PATTERN (after)) == UNSPEC_VOLATILE)
-		  || (USEFUL_INSN_P (after)
-		      && (asm_noperands (PATTERN (after))>=0)
-		      && !strcmp (decode_asm_operands (PATTERN (after),
-						       NULL, NULL, NULL,
-						       NULL, NULL), "")))
-		after = next_active_insn (after);
-	      if (!after)
-		break;
-
 	      /* If the insn is a branch, then it cannot be problematic.  */
 	      if (!NONJUMP_INSN_P (after)
 		  || GET_CODE (PATTERN (after)) == SEQUENCE)
@@ -1253,8 +1324,7 @@ sparc_do_work_around_errata (void)
 	      if (seq_b)
 		{
 		  /* Add NOP if followed by a store.  */
-		  if ((set = single_set (after)) != NULL_RTX
-		      && MEM_P (SET_DEST (set)))
+		  if (store_insn_p (after))
 		    insert_nop = true;
 
 		  /* Otherwise it is ok.  */
@@ -1269,15 +1339,14 @@ sparc_do_work_around_errata (void)
 		      && (MEM_P (SET_DEST (set)) || mem_ref (SET_SRC (set))))
 		    break;
 
-		  after = next_active_insn (after);
+		  after = next_active_non_empty_insn (after);
 		  if (!after)
 		    break;
 		}
 
 	      /* Add NOP if third instruction is a store.  */
 	      if (i == 1
-		  && (set = single_set (after)) != NULL_RTX
-		  && MEM_P (SET_DEST (set)))
+		  && store_insn_p (after))
 		insert_nop = true;
 	    }
 	}
@@ -1604,6 +1673,10 @@ dump_target_flag_bits (const int flags)
     fprintf (stderr, "CBCOND ");
   if (flags & MASK_DEPRECATED_V8_INSNS)
     fprintf (stderr, "DEPRECATED_V8_INSNS ");
+  if (flags & MASK_LEON)
+    fprintf (stderr, "LEON ");
+  if (flags & MASK_LEON3)
+    fprintf (stderr, "LEON3 ");
   if (flags & MASK_SPARCLET)
     fprintf (stderr, "SPARCLET ");
   if (flags & MASK_SPARCLITE)
@@ -1640,6 +1713,7 @@ sparc_option_override (void)
     { TARGET_CPU_hypersparc, PROCESSOR_HYPERSPARC },
     { TARGET_CPU_leon, PROCESSOR_LEON },
     { TARGET_CPU_leon3, PROCESSOR_LEON3 },
+    { TARGET_CPU_leon5, PROCESSOR_LEON5 },
     { TARGET_CPU_leon3v7, PROCESSOR_LEON3V7 },
     { TARGET_CPU_sparclite, PROCESSOR_F930 },
     { TARGET_CPU_sparclite86x, PROCESSOR_SPARCLITE86X },
@@ -1671,6 +1745,7 @@ sparc_option_override (void)
     { "hypersparc",	MASK_ISA, MASK_V8 },
     { "leon",		MASK_ISA|MASK_FSMULD, MASK_V8|MASK_LEON },
     { "leon3",		MASK_ISA, MASK_V8|MASK_LEON3 },
+    { "leon5",		MASK_ISA, MASK_V8|MASK_LEON3 },
     { "leon3v7",	MASK_ISA, MASK_LEON3 },
     { "sparclite",	MASK_ISA, MASK_SPARCLITE },
     /* The Fujitsu MB86930 is the original sparclite chip, with no FPU.  */
@@ -1784,7 +1859,7 @@ sparc_option_override (void)
       }
 
   /* Set the default CPU if no -mcpu option was specified.  */
-  if (!global_options_set.x_sparc_cpu_and_features)
+  if (!OPTION_SET_P (sparc_cpu_and_features))
     {
       for (def = &cpu_default[0]; def->cpu != -1; ++def)
 	if (def->cpu == TARGET_CPU_DEFAULT)
@@ -1794,7 +1869,7 @@ sparc_option_override (void)
     }
 
   /* Set the default CPU if no -mtune option was specified.  */
-  if (!global_options_set.x_sparc_cpu)
+  if (!OPTION_SET_P (sparc_cpu))
     sparc_cpu = sparc_cpu_and_features;
 
   cpu = &cpu_table[(int) sparc_cpu_and_features];
@@ -1900,7 +1975,7 @@ sparc_option_override (void)
     dump_target_flags ("Final target_flags", target_flags);
 
   /* Set the code model if no -mcmodel option was specified.  */
-  if (global_options_set.x_sparc_code_model)
+  if (OPTION_SET_P (sparc_code_model))
     {
       if (TARGET_ARCH32)
 	error ("%<-mcmodel=%> is not supported in 32-bit mode");
@@ -1914,7 +1989,7 @@ sparc_option_override (void)
     }
 
   /* Set the memory model if no -mmemory-model option was specified.  */
-  if (!global_options_set.x_sparc_memory_model)
+  if (!OPTION_SET_P (sparc_memory_model))
     {
       /* Choose the memory model for the operating system.  */
       enum sparc_memory_model_type os_default = SUBTARGET_DEFAULT_MEMORY_MODEL;
@@ -1980,6 +2055,9 @@ sparc_option_override (void)
     case PROCESSOR_LEON3:
     case PROCESSOR_LEON3V7:
       sparc_costs = &leon3_costs;
+      break;
+    case PROCESSOR_LEON5:
+      sparc_costs = &leon5_costs;
       break;
     case PROCESSOR_SPARCLET:
     case PROCESSOR_TSC701:
@@ -2099,12 +2177,12 @@ sparc_option_override (void)
   /* Disable save slot sharing for call-clobbered registers by default.
      The IRA sharing algorithm works on single registers only and this
      pessimizes for double floating-point registers.  */
-  if (!global_options_set.x_flag_ira_share_save_slots)
+  if (!OPTION_SET_P (flag_ira_share_save_slots))
     flag_ira_share_save_slots = 0;
 
   /* Only enable REE by default in 64-bit mode where it helps to eliminate
      redundant 32-to-64-bit extensions.  */
-  if (!global_options_set.x_flag_ree && TARGET_ARCH32)
+  if (!OPTION_SET_P (flag_ree) && TARGET_ARCH32)
     flag_ree = 0;
 
   /* Do various machine dependent initializations.  */
@@ -8863,18 +8941,18 @@ epilogue_renumber (rtx *where, int test)
 
 /* Leaf functions and non-leaf functions have different needs.  */
 
-static const int
-reg_leaf_alloc_order[] = REG_LEAF_ALLOC_ORDER;
+static const int reg_leaf_alloc_order[] = REG_LEAF_ALLOC_ORDER;
 
-static const int
-reg_nonleaf_alloc_order[] = REG_ALLOC_ORDER;
+static const int reg_nonleaf_alloc_order[] = REG_ALLOC_ORDER;
 
-static const int *const reg_alloc_orders[] = {
+static const int *const reg_alloc_orders[] =
+{
   reg_leaf_alloc_order,
-  reg_nonleaf_alloc_order};
+  reg_nonleaf_alloc_order
+};
 
 void
-order_regs_for_local_alloc (void)
+sparc_order_regs_for_local_alloc (void)
 {
   static int last_order_nonleaf = 1;
 
@@ -8886,7 +8964,28 @@ order_regs_for_local_alloc (void)
 	      FIRST_PSEUDO_REGISTER * sizeof (int));
     }
 }
-
+
+int
+sparc_leaf_reg_remap (int regno)
+{
+  gcc_checking_assert (regno >= 0);
+
+  /* Do not remap in flat mode.  */
+  if (TARGET_FLAT)
+    return regno;
+
+  /* Do not remap global, stack pointer or floating-point registers.  */
+  if (regno < 8 || regno == STACK_POINTER_REGNUM || regno > SPARC_LAST_INT_REG)
+    return regno;
+
+  /* Neither out nor local nor frame pointer registers must appear.  */
+  if ((regno >= 8 && regno <= 23) || regno == HARD_FRAME_POINTER_REGNUM)
+    return -1;
+
+  /* Remap in to out registers.  */
+  return regno - 16;
+}
+
 /* Return 1 if REG and MEM are legitimate enough to allow the various
    MEM<-->REG splits to be run.  */
 
@@ -10107,11 +10206,64 @@ hypersparc_adjust_cost (rtx_insn *insn, int dtype, rtx_insn *dep_insn,
 }
 
 static int
+leon5_adjust_cost (rtx_insn *insn, int dtype, rtx_insn *dep_insn,
+		   int cost)
+{
+  enum attr_type insn_type, dep_type;
+  rtx pat = PATTERN (insn);
+  rtx dep_pat = PATTERN (dep_insn);
+
+  if (recog_memoized (insn) < 0 || recog_memoized (dep_insn) < 0)
+    return cost;
+
+  insn_type = get_attr_type (insn);
+  dep_type = get_attr_type (dep_insn);
+
+  switch (dtype)
+    {
+    case REG_DEP_TRUE:
+      /* Data dependency; DEP_INSN writes a register that INSN reads some
+	 cycles later.  */
+
+      switch (insn_type)
+	{
+	case TYPE_STORE:
+	  /* Try to schedule three instructions between the store and
+	     the ALU instruction that generated the data.  */
+	  if (dep_type == TYPE_IALU || dep_type == TYPE_SHIFT)
+	    {
+	      if (GET_CODE (pat) != SET || GET_CODE (dep_pat) != SET)
+		break;
+
+	      if (rtx_equal_p (SET_DEST (dep_pat), SET_SRC (pat)))
+		return 4;
+	    }
+	  break;
+	default:
+	  break;
+	}
+      break;
+    case REG_DEP_ANTI:
+      /* Penalize anti-dependencies for FPU instructions.  */
+      if (fpop_insn_p (insn) || insn_type == TYPE_FPLOAD)
+	return 4;
+      break;
+    default:
+      break;
+    }
+
+  return cost;
+}
+
+static int
 sparc_adjust_cost (rtx_insn *insn, int dep_type, rtx_insn *dep, int cost,
 		   unsigned int)
 {
   switch (sparc_cpu)
     {
+    case PROCESSOR_LEON5:
+      cost = leon5_adjust_cost (insn, dep_type, dep, cost);
+      break;
     case PROCESSOR_SUPERSPARC:
       cost = supersparc_adjust_cost (insn, dep_type, dep, cost);
       break;
@@ -12983,14 +13135,11 @@ sparc_conditional_register_usage (void)
     fixed_regs[4] = 1;
   else if (fixed_regs[4] == 2)
     fixed_regs[4] = 0;
+
+  /* Disable leaf function optimization in flat mode.  */
   if (TARGET_FLAT)
-    {
-      int regno;
-      /* Disable leaf functions.  */
-      memset (sparc_leaf_regs, 0, FIRST_PSEUDO_REGISTER);
-      for (regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
-	leaf_reg_remap [regno] = regno;
-    }
+    memset (sparc_leaf_regs, 0, FIRST_PSEUDO_REGISTER);
+
   if (TARGET_VIS)
     global_regs[SPARC_GSR_REG] = 1;
 }

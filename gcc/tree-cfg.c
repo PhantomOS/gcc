@@ -54,6 +54,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "value-prof.h"
 #include "tree-inline.h"
 #include "tree-ssa-live.h"
+#include "tree-ssa-dce.h"
 #include "omp-general.h"
 #include "omp-expand.h"
 #include "tree-cfgcleanup.h"
@@ -312,12 +313,11 @@ replace_loop_annotate_in_block (basic_block bb, class loop *loop)
 static void
 replace_loop_annotate (void)
 {
-  class loop *loop;
   basic_block bb;
   gimple_stmt_iterator gsi;
   gimple *stmt;
 
-  FOR_EACH_LOOP (loop, 0)
+  for (auto loop : loops_list (cfun, 0))
     {
       /* First look into the header.  */
       replace_loop_annotate_in_block (loop->header, loop);
@@ -1481,6 +1481,7 @@ cleanup_dead_labels_eh (label_record *label_for_bb)
 	if (lab != lp->post_landing_pad)
 	  {
 	    EH_LANDING_PAD_NR (lp->post_landing_pad) = 0;
+	    lp->post_landing_pad = lab;
 	    EH_LANDING_PAD_NR (lab) = lp->index;
 	  }
       }
@@ -1707,7 +1708,10 @@ cleanup_dead_labels (void)
 	      || FORCED_LABEL (label))
 	    gsi_next (&i);
 	  else
-	    gsi_remove (&i, true);
+	    {
+	      gcc_checking_assert (EH_LANDING_PAD_NR (label) == 0);
+	      gsi_remove (&i, true);
+	    }
 	}
     }
 
@@ -2023,12 +2027,8 @@ replace_uses_by (tree name, tree val)
   /* Also update the trees stored in loop structures.  */
   if (current_loops)
     {
-      class loop *loop;
-
-      FOR_EACH_LOOP (loop, 0)
-	{
+      for (auto loop : loops_list (cfun, 0))
 	  substitute_in_loop_info (loop, name, val);
-	}
     }
 }
 
@@ -3453,11 +3453,56 @@ verify_gimple_call (gcall *stmt)
 	}
     }
 
+  /* For a call to .DEFERRED_INIT,
+     LHS = DEFERRED_INIT (SIZE of the DECL, INIT_TYPE, IS_VLA)
+     we should guarantee that the 1st and the 3rd arguments are consistent:
+     1st argument: SIZE of the DECL;
+     3rd argument: IS_VLA, 0 NO, 1 YES;
+
+     if IS_VLA is false, the 1st argument should be a constant and the same as
+     the size of the LHS.  */
+  if (gimple_call_internal_p (stmt, IFN_DEFERRED_INIT))
+    {
+      tree size_of_arg0 = gimple_call_arg (stmt, 0);
+      tree size_of_lhs = TYPE_SIZE_UNIT (TREE_TYPE (lhs));
+      tree is_vla_node = gimple_call_arg (stmt, 2);
+      bool is_vla = (bool) TREE_INT_CST_LOW (is_vla_node);
+
+      if (TREE_CODE (lhs) == SSA_NAME)
+	lhs = SSA_NAME_VAR (lhs);
+
+      poly_uint64 size_from_arg0, size_from_lhs;
+      bool is_constant_size_arg0 = poly_int_tree_p (size_of_arg0,
+						    &size_from_arg0);
+      bool is_constant_size_lhs = poly_int_tree_p (size_of_lhs,
+						   &size_from_lhs);
+      if (!is_vla)
+	{
+	  if (!is_constant_size_arg0)
+	    {
+	      error ("%<DEFFERED_INIT%> calls for non-VLA should have "
+		     "constant size for the first argument");
+	      return true;
+	    }
+	  else if (!is_constant_size_lhs)
+	    {
+	      error ("%<DEFFERED_INIT%> calls for non-VLA should have "
+		     "constant size for the LHS");
+	      return true;
+	    }
+	  else if (maybe_ne (size_from_arg0, size_from_lhs))
+	    {
+	      error ("%<DEFFERED_INIT%> calls for non-VLA should have same "
+		     "constant size for the first argument and LHS");
+	      return true;
+	    }
+	}
+    }
+
   /* ???  The C frontend passes unpromoted arguments in case it
      didn't see a function declaration before the call.  So for now
      leave the call arguments mostly unverified.  Once we gimplify
      unit-at-a-time we have a chance to fix this.  */
-
   for (i = 0; i < gimple_call_num_args (stmt); ++i)
     {
       tree arg = gimple_call_arg (stmt, i);
@@ -3752,6 +3797,15 @@ verify_gimple_assign_unary (gassign *stmt)
     case BIT_NOT_EXPR:
     case PAREN_EXPR:
     case CONJ_EXPR:
+      /* Disallow pointer and offset types for many of the unary gimple. */
+      if (POINTER_TYPE_P (lhs_type)
+	  || TREE_CODE (lhs_type) == OFFSET_TYPE)
+	{
+	  error ("invalid types for %qs", code_name);
+	  debug_generic_expr (lhs_type);
+	  debug_generic_expr (rhs1_type);
+	  return true;
+	}
       break;
 
     case ABSU_EXPR:
@@ -4127,6 +4181,19 @@ verify_gimple_assign_binary (gassign *stmt)
     case ROUND_MOD_EXPR:
     case RDIV_EXPR:
     case EXACT_DIV_EXPR:
+      /* Disallow pointer and offset types for many of the binary gimple. */
+      if (POINTER_TYPE_P (lhs_type)
+	  || TREE_CODE (lhs_type) == OFFSET_TYPE)
+	{
+	  error ("invalid types for %qs", code_name);
+	  debug_generic_expr (lhs_type);
+	  debug_generic_expr (rhs1_type);
+	  debug_generic_expr (rhs2_type);
+	  return true;
+	}
+      /* Continue with generic binary expression handling.  */
+      break;
+
     case MIN_EXPR:
     case MAX_EXPR:
     case BIT_IOR_EXPR:
@@ -4412,7 +4479,8 @@ verify_gimple_assign_ternary (gassign *stmt)
 		  && !SCALAR_FLOAT_TYPE_P (rhs1_type))
 		 || (!INTEGRAL_TYPE_P (lhs_type)
 		     && !SCALAR_FLOAT_TYPE_P (lhs_type))))
-	    || !types_compatible_p (rhs1_type, rhs2_type)
+	    /* rhs1_type and rhs2_type may differ in sign.  */
+	    || !tree_nop_conversion_p (rhs1_type, rhs2_type)
 	    || !useless_type_conversion_p (lhs_type, rhs3_type)
 	    || maybe_lt (GET_MODE_SIZE (element_mode (rhs3_type)),
 			 2 * GET_MODE_SIZE (element_mode (rhs1_type))))
@@ -6495,7 +6563,6 @@ gimple_duplicate_sese_region (edge entry, edge exit,
   bool free_region_copy = false, copying_header = false;
   class loop *loop = entry->dest->loop_father;
   edge exit_copy;
-  vec<basic_block> doms = vNULL;
   edge redirected;
   profile_count total_count = profile_count::uninitialized ();
   profile_count entry_count = profile_count::uninitialized ();
@@ -6549,9 +6616,9 @@ gimple_duplicate_sese_region (edge entry, edge exit,
 
   /* Record blocks outside the region that are dominated by something
      inside.  */
+  auto_vec<basic_block> doms;
   if (update_dominance)
     {
-      doms.create (0);
       doms = get_dominated_by_region (CDI_DOMINATORS, region, n_region);
     }
 
@@ -6596,7 +6663,6 @@ gimple_duplicate_sese_region (edge entry, edge exit,
       set_immediate_dominator (CDI_DOMINATORS, entry->dest, entry->src);
       doms.safe_push (get_bb_original (entry->dest));
       iterate_fix_dominators (CDI_DOMINATORS, doms, false);
-      doms.release ();
     }
 
   /* Add the other PHI node arguments.  */
@@ -6662,7 +6728,6 @@ gimple_duplicate_sese_tail (edge entry, edge exit,
   class loop *loop = exit->dest->loop_father;
   class loop *orig_loop = entry->dest->loop_father;
   basic_block switch_bb, entry_bb, nentry_bb;
-  vec<basic_block> doms;
   profile_count total_count = profile_count::uninitialized (),
 		exit_count = profile_count::uninitialized ();
   edge exits[2], nexits[2], e;
@@ -6705,7 +6770,8 @@ gimple_duplicate_sese_tail (edge entry, edge exit,
 
   /* Record blocks outside the region that are dominated by something
      inside.  */
-  doms = get_dominated_by_region (CDI_DOMINATORS, region, n_region);
+  auto_vec<basic_block> doms = get_dominated_by_region (CDI_DOMINATORS, region,
+							n_region);
 
   total_count = exit->src->count;
   exit_count = exit->count ();
@@ -6785,7 +6851,6 @@ gimple_duplicate_sese_tail (edge entry, edge exit,
   /* Anything that is outside of the region, but was dominated by something
      inside needs to update dominance info.  */
   iterate_fix_dominators (CDI_DOMINATORS, doms, false);
-  doms.release ();
   /* Update the SSA web.  */
   update_ssa (TODO_update_ssa);
 
@@ -7567,7 +7632,7 @@ basic_block
 move_sese_region_to_fn (struct function *dest_cfun, basic_block entry_bb,
 		        basic_block exit_bb, tree orig_block)
 {
-  vec<basic_block> bbs, dom_bbs;
+  vec<basic_block> bbs;
   basic_block dom_entry = get_immediate_dominator (CDI_DOMINATORS, entry_bb);
   basic_block after, bb, *entry_pred, *exit_succ, abb;
   struct function *saved_cfun = cfun;
@@ -7599,9 +7664,9 @@ move_sese_region_to_fn (struct function *dest_cfun, basic_block entry_bb,
 
   /* The blocks that used to be dominated by something in BBS will now be
      dominated by the new block.  */
-  dom_bbs = get_dominated_by_region (CDI_DOMINATORS,
-				     bbs.address (),
-				     bbs.length ());
+  auto_vec<basic_block> dom_bbs = get_dominated_by_region (CDI_DOMINATORS,
+							   bbs.address (),
+							   bbs.length ());
 
   /* Detach ENTRY_BB and EXIT_BB from CFUN->CFG.  We need to remember
      the predecessor edges to ENTRY_BB and the successor edges to
@@ -7728,9 +7793,8 @@ move_sese_region_to_fn (struct function *dest_cfun, basic_block entry_bb,
 
   /* Fix up orig_loop_num.  If the block referenced in it has been moved
      to dest_cfun, update orig_loop_num field, otherwise clear it.  */
-  class loop *dloop;
   signed char *moved_orig_loop_num = NULL;
-  FOR_EACH_LOOP_FN (dest_cfun, dloop, 0)
+  for (auto dloop : loops_list (dest_cfun, 0))
     if (dloop->orig_loop_num)
       {
 	if (moved_orig_loop_num == NULL)
@@ -7768,11 +7832,10 @@ move_sese_region_to_fn (struct function *dest_cfun, basic_block entry_bb,
 	      /* If we have moved both loops with this orig_loop_num into
 		 dest_cfun and the LOOP_DIST_ALIAS call is being moved there
 		 too, update the first argument.  */
-	      gcc_assert ((*larray)[dloop->orig_loop_num] != NULL
-			  && (get_loop (saved_cfun, dloop->orig_loop_num)
-			      == NULL));
+	      gcc_assert ((*larray)[orig_loop_num] != NULL
+			  && (get_loop (saved_cfun, orig_loop_num) == NULL));
 	      tree t = build_int_cst (integer_type_node,
-				      (*larray)[dloop->orig_loop_num]->num);
+				      (*larray)[orig_loop_num]->num);
 	      gimple_call_set_arg (g, 0, t);
 	      update_stmt (g);
 	      /* Make sure the following loop will not update it.  */
@@ -7937,7 +8000,6 @@ move_sese_region_to_fn (struct function *dest_cfun, basic_block entry_bb,
   set_immediate_dominator (CDI_DOMINATORS, bb, dom_entry);
   FOR_EACH_VEC_ELT (dom_bbs, i, abb)
     set_immediate_dominator (CDI_DOMINATORS, abb, bb);
-  dom_bbs.release ();
 
   if (exit_bb)
     {
@@ -8059,21 +8121,29 @@ dump_function_to_file (tree fndecl, FILE *file, dump_flags_t flags)
 	       : (fun->curr_properties & PROP_cfg) ? "cfg"
 	       : "");
 
-      if (cfun->cfg)
+      if (fun && fun->cfg)
 	{
-	  basic_block bb = ENTRY_BLOCK_PTR_FOR_FN (cfun);
+	  basic_block bb = ENTRY_BLOCK_PTR_FOR_FN (fun);
 	  if (bb->count.initialized_p ())
-	    fprintf (file, ",%s(%d)",
+	    fprintf (file, ",%s(%" PRIu64 ")",
 		     profile_quality_as_string (bb->count.quality ()),
 		     bb->count.value ());
-	  fprintf (file, ")\n%s (", function_name (fun));
+	  if (dump_flags & TDF_UID)
+	    fprintf (file, ")\n%sD_%u (", function_name (fun),
+		     DECL_UID (fndecl));
+	  else
+	    fprintf (file, ")\n%s (", function_name (fun));
 	}
     }
   else
     {
       print_generic_expr (file, TREE_TYPE (fntype), dump_flags);
-      fprintf (file, " %s %s(", function_name (fun),
-	       tmclone ? "[tm-clone] " : "");
+      if (dump_flags & TDF_UID)
+	fprintf (file, " %sD.%u %s(", function_name (fun), DECL_UID (fndecl),
+		 tmclone ? "[tm-clone] " : "");
+      else
+	fprintf (file, " %s %s(", function_name (fun),
+		 tmclone ? "[tm-clone] " : "");
     }
 
   arg = DECL_ARGUMENTS (fndecl);
@@ -8147,8 +8217,8 @@ dump_function_to_file (tree fndecl, FILE *file, dump_flags_t flags)
 
       tree name;
 
-      if (gimple_in_ssa_p (cfun))
-	FOR_EACH_SSA_NAME (ix, name, cfun)
+      if (gimple_in_ssa_p (fun))
+	FOR_EACH_SSA_NAME (ix, name, fun)
 	  {
 	    if (!SSA_NAME_VAR (name)
 		/* SSA name with decls without a name still get
@@ -8184,7 +8254,7 @@ dump_function_to_file (tree fndecl, FILE *file, dump_flags_t flags)
 
       fprintf (file, "}\n");
     }
-  else if (fun->curr_properties & PROP_gimple_any)
+  else if (fun && (fun->curr_properties & PROP_gimple_any))
     {
       /* The function is now in GIMPLE form but the CFG has not been
 	 built yet.  Emit the single sequence of GIMPLE statements
@@ -8687,7 +8757,6 @@ gimple_flow_call_edges_add (sbitmap blocks)
 void
 remove_edge_and_dominated_blocks (edge e)
 {
-  vec<basic_block> bbs_to_remove = vNULL;
   vec<basic_block> bbs_to_fix_dom = vNULL;
   edge f;
   edge_iterator ei;
@@ -8738,6 +8807,7 @@ remove_edge_and_dominated_blocks (edge e)
     }
 
   auto_bitmap df, df_idom;
+  auto_vec<basic_block> bbs_to_remove;
   if (none_removed)
     bitmap_set_bit (df_idom,
 		    get_immediate_dominator (CDI_DOMINATORS, e->dest)->index);
@@ -8804,7 +8874,6 @@ remove_edge_and_dominated_blocks (edge e)
 
   iterate_fix_dominators (CDI_DOMINATORS, bbs_to_fix_dom, true);
 
-  bbs_to_remove.release ();
   bbs_to_fix_dom.release ();
 }
 
@@ -9057,7 +9126,7 @@ struct cfg_hooks gimple_cfg_hooks = {
   gimple_flow_call_edges_add,   /* flow_call_edges_add */
   gimple_execute_on_growing_pred,	/* execute_on_growing_pred */
   gimple_execute_on_shrinking_pred, /* execute_on_shrinking_pred */
-  gimple_duplicate_loop_to_header_edge, /* duplicate loop for trees */
+  gimple_duplicate_loop_body_to_header_edge, /* duplicate loop for trees */
   gimple_lv_add_condition_to_bb, /* lv_add_condition_to_bb */
   gimple_lv_adjust_loop_header_phi, /* lv_adjust_loop_header_phi*/
   extract_true_false_edges_from_block, /* extract_cond_bb_edges */
@@ -9428,7 +9497,7 @@ pass_warn_function_return::execute (function *fun)
   /* If we see "return;" in some basic block, then we do reach the end
      without returning a value.  */
   else if (warn_return_type > 0
-	   && !TREE_NO_WARNING (fun->decl)
+	   && !warning_suppressed_p (fun->decl, OPT_Wreturn_type)
 	   && !VOID_TYPE_P (TREE_TYPE (TREE_TYPE (fun->decl))))
     {
       FOR_EACH_EDGE (e, ei, EXIT_BLOCK_PTR_FOR_FN (fun)->preds)
@@ -9437,14 +9506,14 @@ pass_warn_function_return::execute (function *fun)
 	  greturn *return_stmt = dyn_cast <greturn *> (last);
 	  if (return_stmt
 	      && gimple_return_retval (return_stmt) == NULL
-	      && !gimple_no_warning_p (last))
+	      && !warning_suppressed_p (last, OPT_Wreturn_type))
 	    {
 	      location = gimple_location (last);
 	      if (LOCATION_LOCUS (location) == UNKNOWN_LOCATION)
 		location = fun->function_end_locus;
 	      if (warning_at (location, OPT_Wreturn_type,
 			      "control reaches end of non-void function"))
-		TREE_NO_WARNING (fun->decl) = 1;
+		suppress_warning (fun->decl, OPT_Wreturn_type);
 	      break;
 	    }
 	}
@@ -9452,7 +9521,7 @@ pass_warn_function_return::execute (function *fun)
 	 into __builtin_unreachable () call with BUILTINS_LOCATION.
 	 Recognize those too.  */
       basic_block bb;
-      if (!TREE_NO_WARNING (fun->decl))
+      if (!warning_suppressed_p (fun->decl, OPT_Wreturn_type))
 	FOR_EACH_BB_FN (bb, fun)
 	  if (EDGE_COUNT (bb->succs) == 0)
 	    {
@@ -9476,7 +9545,7 @@ pass_warn_function_return::execute (function *fun)
 		    location = fun->function_end_locus;
 		  if (warning_at (location, OPT_Wreturn_type,
 				  "control reaches end of non-void function"))
-		    TREE_NO_WARNING (fun->decl) = 1;
+		    suppress_warning (fun->decl, OPT_Wreturn_type);
 		  break;
 		}
 	    }
@@ -9598,13 +9667,52 @@ make_pass_warn_unused_result (gcc::context *ctxt)
   return new pass_warn_unused_result (ctxt);
 }
 
+/* Maybe Remove stores to variables we marked write-only.
+   Return true if a store was removed. */
+static bool
+maybe_remove_writeonly_store (gimple_stmt_iterator &gsi, gimple *stmt,
+			      bitmap dce_ssa_names)
+{
+  /* Keep access when store has side effect, i.e. in case when source
+     is volatile.  */  
+  if (!gimple_store_p (stmt)
+      || gimple_has_side_effects (stmt)
+      || optimize_debug)
+    return false;
+
+  tree lhs = get_base_address (gimple_get_lhs (stmt));
+
+  if (!VAR_P (lhs)
+      || (!TREE_STATIC (lhs) && !DECL_EXTERNAL (lhs))
+      || !varpool_node::get (lhs)->writeonly)
+    return false;
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      fprintf (dump_file, "Removing statement, writes"
+	       " to write only var:\n");
+      print_gimple_stmt (dump_file, stmt, 0,
+			 TDF_VOPS|TDF_MEMSYMS);
+    }
+
+  /* Mark ssa name defining to be checked for simple dce. */
+  if (gimple_assign_single_p (stmt))
+    {
+      tree rhs = gimple_assign_rhs1 (stmt);
+      if (TREE_CODE (rhs) == SSA_NAME
+	  && !SSA_NAME_IS_DEFAULT_DEF (rhs))
+	bitmap_set_bit (dce_ssa_names, SSA_NAME_VERSION (rhs));
+    }
+  unlink_stmt_vdef (stmt);
+  gsi_remove (&gsi, true);
+  release_defs (stmt);
+  return true;
+}
+
 /* IPA passes, compilation of earlier functions or inlining
    might have changed some properties, such as marked functions nothrow,
    pure, const or noreturn.
-   Remove redundant edges and basic blocks, and create new ones if necessary.
-
-   This pass can't be executed as stand alone pass from pass manager, because
-   in between inlining and this fixup the verify_flow_info would fail.  */
+   Remove redundant edges and basic blocks, and create new ones if necessary. */
 
 unsigned int
 execute_fixup_cfg (void)
@@ -9617,6 +9725,7 @@ execute_fixup_cfg (void)
   profile_count num = node->count;
   profile_count den = ENTRY_BLOCK_PTR_FOR_FN (cfun)->count;
   bool scale = num.initialized_p () && !(num == den);
+  auto_bitmap dce_ssa_names;
 
   if (scale)
     {
@@ -9656,26 +9765,13 @@ execute_fixup_cfg (void)
 		todo |= TODO_cleanup_cfg;
 	     }
 
-	  /* Remove stores to variables we marked write-only.
-	     Keep access when store has side effect, i.e. in case when source
-	     is volatile.  */
-	  if (gimple_store_p (stmt)
-	      && !gimple_has_side_effects (stmt)
-	      && !optimize_debug)
+	  /* Remove stores to variables we marked write-only. */
+	  if (maybe_remove_writeonly_store (gsi, stmt, dce_ssa_names))
 	    {
-	      tree lhs = get_base_address (gimple_get_lhs (stmt));
-
-	      if (VAR_P (lhs)
-		  && (TREE_STATIC (lhs) || DECL_EXTERNAL (lhs))
-		  && varpool_node::get (lhs)->writeonly)
-		{
-		  unlink_stmt_vdef (stmt);
-		  gsi_remove (&gsi, true);
-		  release_defs (stmt);
-	          todo |= TODO_update_ssa | TODO_cleanup_cfg;
-	          continue;
-		}
+	      todo |= TODO_update_ssa | TODO_cleanup_cfg;
+	      continue;
 	    }
+
 	  /* For calls we can simply remove LHS when it is known
 	     to be write-only.  */
 	  if (is_gimple_call (stmt)
@@ -9735,6 +9831,8 @@ execute_fixup_cfg (void)
   if (current_loops
       && (todo & TODO_cleanup_cfg))
     loops_state_set (LOOPS_NEED_FIXUP);
+
+  simple_dce_from_worklist (dce_ssa_names);
 
   return todo;
 }
@@ -9917,22 +10015,20 @@ test_linear_chain ()
   calculate_dominance_info (CDI_DOMINATORS);
   ASSERT_EQ (bb_a, get_immediate_dominator (CDI_DOMINATORS, bb_b));
   ASSERT_EQ (bb_b, get_immediate_dominator (CDI_DOMINATORS, bb_c));
-  vec<basic_block> dom_by_b = get_dominated_by (CDI_DOMINATORS, bb_b);
+  auto_vec<basic_block> dom_by_b = get_dominated_by (CDI_DOMINATORS, bb_b);
   ASSERT_EQ (1, dom_by_b.length ());
   ASSERT_EQ (bb_c, dom_by_b[0]);
   free_dominance_info (CDI_DOMINATORS);
-  dom_by_b.release ();
 
   /* Similarly for post-dominance: each BB in our chain is post-dominated
      by the one after it.  */
   calculate_dominance_info (CDI_POST_DOMINATORS);
   ASSERT_EQ (bb_b, get_immediate_dominator (CDI_POST_DOMINATORS, bb_a));
   ASSERT_EQ (bb_c, get_immediate_dominator (CDI_POST_DOMINATORS, bb_b));
-  vec<basic_block> postdom_by_b = get_dominated_by (CDI_POST_DOMINATORS, bb_b);
+  auto_vec<basic_block> postdom_by_b = get_dominated_by (CDI_POST_DOMINATORS, bb_b);
   ASSERT_EQ (1, postdom_by_b.length ());
   ASSERT_EQ (bb_a, postdom_by_b[0]);
   free_dominance_info (CDI_POST_DOMINATORS);
-  postdom_by_b.release ();
 
   pop_cfun ();
 }
@@ -9991,10 +10087,10 @@ test_diamond ()
   ASSERT_EQ (bb_a, get_immediate_dominator (CDI_DOMINATORS, bb_b));
   ASSERT_EQ (bb_a, get_immediate_dominator (CDI_DOMINATORS, bb_c));
   ASSERT_EQ (bb_a, get_immediate_dominator (CDI_DOMINATORS, bb_d));
-  vec<basic_block> dom_by_a = get_dominated_by (CDI_DOMINATORS, bb_a);
+  auto_vec<basic_block> dom_by_a = get_dominated_by (CDI_DOMINATORS, bb_a);
   ASSERT_EQ (3, dom_by_a.length ()); /* B, C, D, in some order.  */
   dom_by_a.release ();
-  vec<basic_block> dom_by_b = get_dominated_by (CDI_DOMINATORS, bb_b);
+  auto_vec<basic_block> dom_by_b = get_dominated_by (CDI_DOMINATORS, bb_b);
   ASSERT_EQ (0, dom_by_b.length ());
   dom_by_b.release ();
   free_dominance_info (CDI_DOMINATORS);
@@ -10004,10 +10100,10 @@ test_diamond ()
   ASSERT_EQ (bb_d, get_immediate_dominator (CDI_POST_DOMINATORS, bb_a));
   ASSERT_EQ (bb_d, get_immediate_dominator (CDI_POST_DOMINATORS, bb_b));
   ASSERT_EQ (bb_d, get_immediate_dominator (CDI_POST_DOMINATORS, bb_c));
-  vec<basic_block> postdom_by_d = get_dominated_by (CDI_POST_DOMINATORS, bb_d);
+  auto_vec<basic_block> postdom_by_d = get_dominated_by (CDI_POST_DOMINATORS, bb_d);
   ASSERT_EQ (3, postdom_by_d.length ()); /* A, B, C in some order.  */
   postdom_by_d.release ();
-  vec<basic_block> postdom_by_b = get_dominated_by (CDI_POST_DOMINATORS, bb_b);
+  auto_vec<basic_block> postdom_by_b = get_dominated_by (CDI_POST_DOMINATORS, bb_b);
   ASSERT_EQ (0, postdom_by_b.length ());
   postdom_by_b.release ();
   free_dominance_info (CDI_POST_DOMINATORS);

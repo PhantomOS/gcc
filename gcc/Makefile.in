@@ -560,6 +560,7 @@ out_file=$(srcdir)/config/@out_file@
 out_object_file=@out_object_file@
 common_out_file=$(srcdir)/common/config/@common_out_file@
 common_out_object_file=@common_out_object_file@
+EXTRA_GTYPE_DEPS=
 md_file=$(srcdir)/common.md $(srcdir)/config/@md_file@
 tm_file_list=@tm_file_list@
 tm_include_list=@tm_include_list@
@@ -712,6 +713,8 @@ tmpdir = /tmp
 
 datarootdir = @datarootdir@
 docdir = @docdir@
+# Directory in which to put DVIs
+dvidir = @dvidir@
 # Directory in which to build HTML
 build_htmldir = $(objdir)/HTML/gcc-$(version)
 # Directory in which to put HTML
@@ -798,13 +801,8 @@ DIR = ../gcc
 # Native compiler for the build machine and its switches.
 CC_FOR_BUILD = @CC_FOR_BUILD@
 CXX_FOR_BUILD = @CXX_FOR_BUILD@
-NO_PIE_CFLAGS_FOR_BUILD = @NO_PIE_CFLAGS_FOR_BUILD@
-NO_PIE_FLAG_FOR_BUILD = @NO_PIE_FLAG_FOR_BUILD@
 BUILD_CFLAGS= @BUILD_CFLAGS@ $(GENERATOR_CFLAGS) -DGENERATOR_FILE
 BUILD_CXXFLAGS = @BUILD_CXXFLAGS@ $(GENERATOR_CFLAGS) -DGENERATOR_FILE
-BUILD_NO_PIE_CFLAGS = @BUILD_NO_PIE_CFLAGS@
-BUILD_CFLAGS += $(BUILD_NO_PIE_CFLAGS)
-BUILD_CXXFLAGS += $(BUILD_NO_PIE_CFLAGS)
 
 # Native compiler that we use.  This may be C++ some day.
 COMPILER_FOR_BUILD = $(CXX_FOR_BUILD)
@@ -816,8 +814,6 @@ BUILD_LINKERFLAGS = $(BUILD_CXXFLAGS)
 
 # Native linker and preprocessor flags.  For x-fragment overrides.
 BUILD_LDFLAGS=@BUILD_LDFLAGS@
-BUILD_NO_PIE_FLAG = @BUILD_NO_PIE_FLAG@
-BUILD_LDFLAGS += $(BUILD_NO_PIE_FLAG)
 BUILD_CPPFLAGS= -I. -I$(@D) -I$(srcdir) -I$(srcdir)/$(@D) \
 		-I$(srcdir)/../include @INCINTL@ $(CPPINC) $(CPPFLAGS)
 
@@ -1248,6 +1244,7 @@ ANALYZER_OBJS = \
 	analyzer/analyzer-pass.o \
 	analyzer/analyzer-selftests.o \
 	analyzer/bar-chart.o \
+	analyzer/call-info.o \
 	analyzer/call-string.o \
 	analyzer/checker-path.o \
 	analyzer/complexity.o \
@@ -1261,6 +1258,7 @@ ANALYZER_OBJS = \
 	analyzer/program-state.o \
 	analyzer/region.o \
 	analyzer/region-model.o \
+	analyzer/region-model-asm.o \
 	analyzer/region-model-impl-calls.o \
 	analyzer/region-model-manager.o \
 	analyzer/region-model-reachability.o \
@@ -1319,6 +1317,9 @@ OBJS = \
 	cfgloopanal.o \
 	cfgloopmanip.o \
 	cfgrtl.o \
+	ctfc.o \
+	ctfout.o \
+	btfout.o \
 	symtab.o \
 	symtab-thunks.o \
 	symtab-clones.o \
@@ -1359,6 +1360,7 @@ OBJS = \
 	dumpfile.o \
 	dwarf2asm.o \
 	dwarf2cfi.o \
+	dwarf2ctf.o \
 	dwarf2out.o \
 	early-remat.o \
 	emit-rtl.o \
@@ -1389,16 +1391,20 @@ OBJS = \
 	gimple-if-to-switch.o \
 	gimple-iterator.o \
 	gimple-fold.o \
+	gimple-harden-conditionals.o \
 	gimple-laddress.o \
 	gimple-loop-interchange.o \
 	gimple-loop-jam.o \
 	gimple-loop-versioning.o \
 	gimple-low.o \
+	gimple-predicate-analysis.o \
 	gimple-pretty-print.o \
 	gimple-range.o \
 	gimple-range-cache.o \
 	gimple-range-edge.o \
+	gimple-range-fold.o \
 	gimple-range-gori.o \
+	gimple-range-trace.o \
 	gimple-ssa-backprop.o \
 	gimple-ssa-evrp.o \
 	gimple-ssa-evrp-analyze.o \
@@ -1408,6 +1414,7 @@ OBJS = \
 	gimple-ssa-store-merging.o \
 	gimple-ssa-strength-reduction.o \
 	gimple-ssa-sprintf.o \
+	gimple-ssa-warn-access.o \
 	gimple-ssa-warn-alloca.o \
 	gimple-ssa-warn-restrict.o \
 	gimple-streamer-in.o \
@@ -1505,6 +1512,7 @@ OBJS = \
 	omp-general.o \
 	omp-low.o \
 	omp-oacc-kernels-decompose.o \
+	omp-oacc-neuter-broadcast.o \
 	omp-simd-clone.o \
 	opt-problem.o \
 	optabs.o \
@@ -1518,6 +1526,7 @@ OBJS = \
 	ordered-hash-map-tests.o \
 	passes.o \
 	plugin.o \
+	pointer-query.o \
 	postreload-gcse.o \
 	postreload.o \
 	predict.o \
@@ -1644,6 +1653,7 @@ OBJS = \
 	tree-ssa-loop.o \
 	tree-ssa-math-opts.o \
 	tree-ssa-operands.o \
+	gimple-range-path.o \
 	tree-ssa-phiopt.o \
 	tree-ssa-phiprop.o \
 	tree-ssa-pre.o \
@@ -1685,9 +1695,11 @@ OBJS = \
 	typed-splay-tree.o \
 	unique-ptr-tests.o \
 	valtrack.o \
+	value-pointer-equiv.o \
 	value-query.o \
 	value-range.o \
 	value-range-equiv.o \
+	value-relation.o \
 	value-prof.o \
 	var-tracking.o \
 	varasm.o \
@@ -1696,6 +1708,7 @@ OBJS = \
 	vmsdbgout.o \
 	vr-values.o \
 	vtable-verify.o \
+	warning-control.o \
 	web.o \
 	wide-int.o \
 	wide-int-print.o \
@@ -1707,8 +1720,8 @@ OBJS = \
 
 # Objects in libcommon.a, potentially used by all host binaries and with
 # no target dependencies.
-OBJS-libcommon = diagnostic.o diagnostic-color.o diagnostic-show-locus.o \
-	diagnostic-format-json.o json.o \
+OBJS-libcommon = diagnostic-spec.o diagnostic.o diagnostic-color.o \
+	diagnostic-show-locus.o diagnostic-format-json.o json.o \
 	edit-context.o \
 	pretty-print.o intl.o \
 	sbitmap.o \
@@ -2648,10 +2661,15 @@ GTFILES = $(CPPLIB_H) $(srcdir)/input.h $(srcdir)/coretypes.h \
   $(srcdir)/ipa-modref.h $(srcdir)/ipa-modref.c \
   $(srcdir)/ipa-modref-tree.h \
   $(srcdir)/signop.h \
+  $(srcdir)/diagnostic-spec.h $(srcdir)/diagnostic-spec.c \
   $(srcdir)/dwarf2out.h \
   $(srcdir)/dwarf2asm.c \
   $(srcdir)/dwarf2cfi.c \
+  $(srcdir)/dwarf2ctf.c \
   $(srcdir)/dwarf2out.c \
+  $(srcdir)/ctfc.h \
+  $(srcdir)/ctfout.c \
+  $(srcdir)/btfout.c \
   $(srcdir)/tree-vect-generic.c \
   $(srcdir)/gimple-isel.cc \
   $(srcdir)/dojump.c $(srcdir)/emit-rtl.h \
@@ -2676,7 +2694,6 @@ GTFILES = $(CPPLIB_H) $(srcdir)/input.h $(srcdir)/coretypes.h \
   $(srcdir)/tree-ssa-operands.h \
   $(srcdir)/tree-profile.c $(srcdir)/tree-nested.c \
   $(srcdir)/omp-offload.h \
-  $(srcdir)/omp-offload.c \
   $(srcdir)/omp-general.c \
   $(srcdir)/omp-low.c \
   $(srcdir)/targhooks.c $(out_file) $(srcdir)/passes.c \
@@ -2734,8 +2751,8 @@ s-gtyp-input: Makefile
 	$(SHELL) $(srcdir)/../move-if-change tmp-gi.list gtyp-input.list
 	$(STAMP) s-gtyp-input
 
-s-gtype: build/gengtype$(build_exeext) $(filter-out [%], $(GTFILES)) \
-	 gtyp-input.list
+s-gtype: $(EXTRA_GTYPE_DEPS) build/gengtype$(build_exeext) \
+	$(filter-out [%], $(GTFILES)) gtyp-input.list
 # First, parse all files and save a state file.
 	$(RUN_GEN) build/gengtype$(build_exeext) $(GENGTYPE_FLAGS) \
                     -S $(srcdir) -I gtyp-input.list -w tmp-gtype.state
@@ -2753,6 +2770,7 @@ generated_files = config.h tm.h $(TM_P_H) $(TM_D_H) $(TM_H) multilib.h \
        $(ALL_GTFILES_H) gtype-desc.c gtype-desc.h version.h \
        options.h target-hooks-def.h insn-opinit.h \
        common/common-target-hooks-def.h pass-instances.def \
+       gimple-match.c generic-match.c \
        c-family/c-target-hooks-def.h d/d-target-hooks-def.h \
        case-cfn-macros.h \
        cfn-operators.pd omp-device-properties.h
@@ -2947,7 +2965,7 @@ build/gengtype$(build_exeext) : build/gengtype-lex.o build/gengtype-parse.o \
 gengtype$(exeext) : gengtype.o gengtype-lex.o gengtype-parse.o \
               gengtype-state.o errors.o $(LIBDEPS)
 	+$(LINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
-	    $(filter-out ($LIBDEPS), $^) $(LIBS)
+	    $(filter-out $(LIBDEPS), $^) $(LIBS)
 
 # Rule for the generator programs:
 $(genprog:%=build/gen%$(build_exeext)): build/gen%$(build_exeext): build/gen%.o $(BUILD_LIBDEPS)
@@ -3314,7 +3332,7 @@ TEXI_GCCINT_FILES = gccint.texi gcc-common.texi gcc-vers.texi		\
 	 loop.texi generic.texi gimple.texi plugins.texi optinfo.texi   \
 	 match-and-simplify.texi analyzer.texi ux.texi poly-int.texi
 
-TEXI_GCCINSTALL_FILES = install.texi install-old.texi fdl.texi		\
+TEXI_GCCINSTALL_FILES = install.texi fdl.texi		\
 	 gcc-common.texi gcc-vers.texi
 
 TEXI_CPPINT_FILES = cppinternals.texi gcc-common.texi gcc-vers.texi
@@ -3371,8 +3389,10 @@ $(build_htmldir)/gcc/index.html: $(TEXI_GCC_FILES)
 $(build_htmldir)/gccint/index.html: $(TEXI_GCCINT_FILES)
 $(build_htmldir)/cppinternals/index.html: $(TEXI_CPPINT_FILES)
 
-dvi:: doc/gcc.dvi doc/gccint.dvi doc/gccinstall.dvi doc/cpp.dvi \
-      doc/cppinternals.dvi lang.dvi
+DVIFILES = doc/gcc.dvi doc/gccint.dvi doc/gccinstall.dvi doc/cpp.dvi \
+           doc/cppinternals.dvi
+
+dvi:: $(DVIFILES) lang.dvi
 
 doc/%.dvi: %.texi
 	$(TEXI2DVI) -I . -I $(abs_docdir) -I $(abs_docdir)/include -o $@ $<
@@ -3781,6 +3801,18 @@ $(DESTDIR)$(infodir)/%.info: doc/%.info installdirs
 	    install-info --dir-file=$(DESTDIR)$(infodir)/dir $@; \
 	  else true; fi; \
 	else true; fi;
+
+dvi__strip_dir = `echo $$p | sed -e 's|^.*/||'`;
+
+install-dvi: $(DVIFILES) lang.install-dvi
+	@$(NORMAL_INSTALL)
+	test -z "$(dvidir)/gcc" || $(mkinstalldirs) "$(DESTDIR)$(dvidir)/gcc"
+	@list='$(DVIFILES)'; for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  f=$(dvi__strip_dir) \
+	  echo " $(INSTALL_DATA) '$$d$$p' '$(DESTDIR)$(dvidir)/gcc/$$f'"; \
+	  $(INSTALL_DATA) "$$d$$p" "$(DESTDIR)$(dvidir)/gcc/$$f"; \
+	done
 
 pdf__strip_dir = `echo $$p | sed -e 's|^.*/||'`;
 

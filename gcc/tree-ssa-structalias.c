@@ -43,6 +43,10 @@
 #include "attribs.h"
 #include "tree-ssa.h"
 #include "tree-cfg.h"
+#include "gimple-range.h"
+#include "ipa-modref-tree.h"
+#include "ipa-modref.h"
+#include "attr-fnspec.h"
 
 /* The idea behind this analyzer is to generate set constraints from the
    program, then solve the resulting constraints in order to generate the
@@ -3712,8 +3716,8 @@ get_constraint_for_rhs (tree t, vec<ce_s> *results)
    entries in *LHSC.  */
 
 static void
-process_all_all_constraints (vec<ce_s> lhsc,
-			     vec<ce_s> rhsc)
+process_all_all_constraints (const vec<ce_s> &lhsc,
+			     const vec<ce_s> &rhsc)
 {
   struct constraint_expr *lhsp, *rhsp;
   unsigned i, j;
@@ -3813,7 +3817,7 @@ do_structure_copy (tree lhsop, tree rhsop)
 /* Create constraints ID = { rhsc }.  */
 
 static void
-make_constraints_to (unsigned id, vec<ce_s> rhsc)
+make_constraints_to (unsigned id, const vec<ce_s> &rhsc)
 {
   struct constraint_expr *c;
   struct constraint_expr includes;
@@ -4047,109 +4051,329 @@ get_function_part_constraint (varinfo_t fi, unsigned part)
   return c;
 }
 
-/* For non-IPA mode, generate constraints necessary for a call on the
-   RHS.  */
+/* Produce constraints for argument ARG of call STMT with eaf flags
+   FLAGS.  RESULTS is array holding constraints for return value.
+   CALLESCAPE_ID is variable where call loocal escapes are added.
+   WRITES_GLOVEL_MEMORY is true if callee may write global memory. */
 
 static void
-handle_rhs_call (gcall *stmt, vec<ce_s> *results)
+handle_call_arg (gcall *stmt, tree arg, vec<ce_s> *results, int flags,
+		 int callescape_id, bool writes_global_memory)
 {
-  struct constraint_expr rhsc;
-  unsigned i;
-  bool returns_uses = false;
+  int relevant_indirect_flags = EAF_NO_INDIRECT_CLOBBER | EAF_NO_INDIRECT_READ
+				| EAF_NO_INDIRECT_ESCAPE;
+  int relevant_flags = relevant_indirect_flags
+		       | EAF_NO_DIRECT_CLOBBER
+		       | EAF_NO_DIRECT_READ
+		       | EAF_NO_DIRECT_ESCAPE;
+  if (gimple_call_lhs (stmt))
+    {
+      relevant_flags |= EAF_NOT_RETURNED_DIRECTLY | EAF_NOT_RETURNED_INDIRECTLY;
+      relevant_indirect_flags |= EAF_NOT_RETURNED_INDIRECTLY;
 
-  for (i = 0; i < gimple_call_num_args (stmt); ++i)
+      /* If value is never read from it can not be returned indirectly
+	 (except through the escape solution).
+	 For all flags we get these implications right except for
+	 not_returned because we miss return functions in ipa-prop.  */
+	 
+      if (flags & EAF_NO_DIRECT_READ)
+	flags |= EAF_NOT_RETURNED_INDIRECTLY;
+    }
+
+  /* If the argument is not used we can ignore it.
+     Similarly argument is invisile for us if it not clobbered, does not
+     escape, is not read and can not be returned.  */
+  if ((flags & EAF_UNUSED) || ((flags & relevant_flags) == relevant_flags))
+    return;
+
+  /* Produce varinfo for direct accesses to ARG.  */
+  varinfo_t tem = new_var_info (NULL_TREE, "callarg", true);
+  tem->is_reg_var = true;
+  make_constraint_to (tem->id, arg);
+  make_any_offset_constraints (tem);
+
+  bool callarg_transitive = false;
+
+  /* As an compile time optimization if we make no difference between
+     direct and indirect accesses make arg transitively closed.
+     This avoids the need to build indir arg and do everything twice.  */
+  if (((flags & EAF_NO_INDIRECT_CLOBBER) != 0)
+      == ((flags & EAF_NO_DIRECT_CLOBBER) != 0)
+      && (((flags & EAF_NO_INDIRECT_READ) != 0)
+	  == ((flags & EAF_NO_DIRECT_READ) != 0))
+      && (((flags & EAF_NO_INDIRECT_ESCAPE) != 0)
+	  == ((flags & EAF_NO_DIRECT_ESCAPE) != 0))
+      && (((flags & EAF_NOT_RETURNED_INDIRECTLY) != 0)
+	  == ((flags & EAF_NOT_RETURNED_DIRECTLY) != 0)))
+    {
+      make_transitive_closure_constraints (tem);
+      callarg_transitive = true;
+      gcc_checking_assert (!(flags & EAF_NO_DIRECT_READ));
+    }
+
+  /* If necessary, produce varinfo for indirect accesses to ARG.  */
+  varinfo_t indir_tem = NULL;
+  if (!callarg_transitive
+      && (flags & relevant_indirect_flags) != relevant_indirect_flags)
+    {
+      struct constraint_expr lhs, rhs;
+      indir_tem = new_var_info (NULL_TREE, "indircallarg", true);
+      indir_tem->is_reg_var = true;
+
+      /* indir_term = *tem.  */
+      lhs.type = SCALAR;
+      lhs.var = indir_tem->id;
+      lhs.offset = 0;
+
+      rhs.type = DEREF;
+      rhs.var = tem->id;
+      rhs.offset = UNKNOWN_OFFSET;
+      process_constraint (new_constraint (lhs, rhs));
+
+      make_any_offset_constraints (indir_tem);
+
+      /* If we do not read indirectly there is no need for transitive closure.
+	 We know there is only one level of indirection.  */
+      if (!(flags & EAF_NO_INDIRECT_READ))
+	make_transitive_closure_constraints (indir_tem);
+      gcc_checking_assert (!(flags & EAF_NO_DIRECT_READ));
+    }
+
+  if (gimple_call_lhs (stmt))
+    {
+      if (!(flags & EAF_NOT_RETURNED_DIRECTLY))
+	{
+	  struct constraint_expr cexpr;
+	  cexpr.var = tem->id;
+	  cexpr.type = SCALAR;
+	  cexpr.offset = 0;
+	  results->safe_push (cexpr);
+	}
+      if (!callarg_transitive & !(flags & EAF_NOT_RETURNED_INDIRECTLY))
+	{
+	  struct constraint_expr cexpr;
+	  cexpr.var = indir_tem->id;
+	  cexpr.type = SCALAR;
+	  cexpr.offset = 0;
+	  results->safe_push (cexpr);
+	}
+    }
+
+  if (!(flags & EAF_NO_DIRECT_READ))
+    {
+      varinfo_t uses = get_call_use_vi (stmt);
+      make_copy_constraint (uses, tem->id);
+      if (!callarg_transitive & !(flags & EAF_NO_INDIRECT_READ))
+	make_copy_constraint (uses, indir_tem->id);
+    }
+  else
+    /* To read indirectly we need to read directly.  */
+    gcc_checking_assert (flags & EAF_NO_INDIRECT_READ);
+
+  if (!(flags & EAF_NO_DIRECT_CLOBBER))
+    {
+      struct constraint_expr lhs, rhs;
+
+      /* *arg = callescape.  */
+      lhs.type = DEREF;
+      lhs.var = tem->id;
+      lhs.offset = 0;
+
+      rhs.type = SCALAR;
+      rhs.var = callescape_id;
+      rhs.offset = 0;
+      process_constraint (new_constraint (lhs, rhs));
+
+      /* callclobbered = arg.  */
+      make_copy_constraint (get_call_clobber_vi (stmt), tem->id);
+    }
+  if (!callarg_transitive & !(flags & EAF_NO_INDIRECT_CLOBBER))
+    {
+      struct constraint_expr lhs, rhs;
+
+      /* *indir_arg = callescape.  */
+      lhs.type = DEREF;
+      lhs.var = indir_tem->id;
+      lhs.offset = 0;
+
+      rhs.type = SCALAR;
+      rhs.var = callescape_id;
+      rhs.offset = 0;
+      process_constraint (new_constraint (lhs, rhs));
+
+      /* callclobbered = indir_arg.  */
+      make_copy_constraint (get_call_clobber_vi (stmt), indir_tem->id);
+    }
+
+  if (!(flags & (EAF_NO_DIRECT_ESCAPE | EAF_NO_INDIRECT_ESCAPE)))
+    {
+      struct constraint_expr lhs, rhs;
+
+      /* callescape = arg;  */
+      lhs.var = callescape_id;
+      lhs.offset = 0;
+      lhs.type = SCALAR;
+
+      rhs.var = tem->id;
+      rhs.offset = 0;
+      rhs.type = SCALAR;
+      process_constraint (new_constraint (lhs, rhs));
+
+      if (writes_global_memory)
+	make_escape_constraint (arg);
+    }
+  else if (!callarg_transitive & !(flags & EAF_NO_INDIRECT_ESCAPE))
+    {
+      struct constraint_expr lhs, rhs;
+
+      /* callescape = *(indir_arg + UNKNOWN);  */
+      lhs.var = callescape_id;
+      lhs.offset = 0;
+      lhs.type = SCALAR;
+
+      rhs.var = indir_tem->id;
+      rhs.offset = 0;
+      rhs.type = SCALAR;
+      process_constraint (new_constraint (lhs, rhs));
+
+      if (writes_global_memory)
+	make_indirect_escape_constraint (tem);
+    }
+}
+
+/* Determine global memory access of call STMT and update
+   WRITES_GLOBAL_MEMORY, READS_GLOBAL_MEMORY and USES_GLOBAL_MEMORY.  */
+
+static void
+determine_global_memory_access (gcall *stmt,
+				bool *writes_global_memory,
+				bool *reads_global_memory,
+				bool *uses_global_memory)
+{
+  tree callee;
+  cgraph_node *node;
+  modref_summary *summary;
+
+  /* We need to detrmine reads to set uses.  */
+  gcc_assert (!uses_global_memory || reads_global_memory);
+
+  if ((callee = gimple_call_fndecl (stmt)) != NULL_TREE
+      && (node = cgraph_node::get (callee)) != NULL
+      && (summary = get_modref_function_summary (node)))
+    {
+      if (writes_global_memory && *writes_global_memory)
+	*writes_global_memory = summary->global_memory_written_p ();
+      if (reads_global_memory && *reads_global_memory)
+	*reads_global_memory = summary->global_memory_read_p ();
+      if (reads_global_memory && uses_global_memory
+	  && !*reads_global_memory && node->binds_to_current_def_p ())
+	*uses_global_memory = false;
+    }
+  if ((writes_global_memory && *writes_global_memory)
+      || (uses_global_memory && *uses_global_memory)
+      || (reads_global_memory && *reads_global_memory))
+    {
+      attr_fnspec fnspec = gimple_call_fnspec (stmt);
+      if (fnspec.known_p ())
+	{
+	  if (writes_global_memory
+	      && !fnspec.global_memory_written_p ())
+	    *writes_global_memory = false;
+	  if (reads_global_memory && !fnspec.global_memory_read_p ())
+	    {
+	      *reads_global_memory = false;
+	      if (uses_global_memory)
+		*uses_global_memory = false;
+	    }
+	}
+    }
+}
+
+/* For non-IPA mode, generate constraints necessary for a call on the
+   RHS and collect return value constraint to RESULTS to be used later in
+   handle_lhs_call.
+  
+   IMPLICIT_EAF_FLAGS are added to each function argument.  If
+   WRITES_GLOBAL_MEMORY is true function is assumed to possibly write to global
+   memory.  Similar for READS_GLOBAL_MEMORY.  */
+
+static void
+handle_rhs_call (gcall *stmt, vec<ce_s> *results,
+		 int implicit_eaf_flags,
+		 bool writes_global_memory,
+		 bool reads_global_memory)
+{
+  determine_global_memory_access (stmt, &writes_global_memory,
+				  &reads_global_memory,
+				  NULL);
+
+  varinfo_t callescape = new_var_info (NULL_TREE, "callescape", true);
+
+  /* If function can use global memory, add it to callescape
+     and to possible return values.  If not we can still use/return addresses
+     of global symbols.  */
+  struct constraint_expr lhs, rhs;
+
+  lhs.type = SCALAR;
+  lhs.var = callescape->id;
+  lhs.offset = 0;
+
+  rhs.type = reads_global_memory ? SCALAR : ADDRESSOF;
+  rhs.var = nonlocal_id;
+  rhs.offset = 0;
+
+  process_constraint (new_constraint (lhs, rhs));
+  results->safe_push (rhs);
+
+  varinfo_t uses = get_call_use_vi (stmt);
+  make_copy_constraint (uses, callescape->id);
+
+  for (unsigned i = 0; i < gimple_call_num_args (stmt); ++i)
     {
       tree arg = gimple_call_arg (stmt, i);
       int flags = gimple_call_arg_flags (stmt, i);
-
-      /* If the argument is not used we can ignore it.  */
-      if (flags & EAF_UNUSED)
-	continue;
-
-      /* As we compute ESCAPED context-insensitive we do not gain
-         any precision with just EAF_NOCLOBBER but not EAF_NOESCAPE
-	 set.  The argument would still get clobbered through the
-	 escape solution.  */
-      if ((flags & EAF_NOCLOBBER)
-	   && (flags & (EAF_NOESCAPE | EAF_NODIRECTESCAPE)))
-	{
-	  varinfo_t uses = get_call_use_vi (stmt);
-	  varinfo_t tem = new_var_info (NULL_TREE, "callarg", true);
-	  tem->is_reg_var = true;
-	  make_constraint_to (tem->id, arg);
-	  make_any_offset_constraints (tem);
-	  if (!(flags & EAF_DIRECT))
-	    make_transitive_closure_constraints (tem);
-	  make_copy_constraint (uses, tem->id);
-	  if (!(flags & (EAF_NOESCAPE | EAF_DIRECT)))
-	    make_indirect_escape_constraint (tem);
-	  returns_uses = true;
-	}
-      else if (flags & (EAF_NOESCAPE | EAF_NODIRECTESCAPE))
-	{
-	  struct constraint_expr lhs, rhs;
-	  varinfo_t uses = get_call_use_vi (stmt);
-	  varinfo_t clobbers = get_call_clobber_vi (stmt);
-	  varinfo_t tem = new_var_info (NULL_TREE, "callarg", true);
-	  tem->is_reg_var = true;
-	  make_constraint_to (tem->id, arg);
-	  make_any_offset_constraints (tem);
-	  if (!(flags & EAF_DIRECT))
-	    make_transitive_closure_constraints (tem);
-	  make_copy_constraint (uses, tem->id);
-	  make_copy_constraint (clobbers, tem->id);
-	  /* Add *tem = nonlocal, do not add *tem = callused as
-	     EAF_NOESCAPE parameters do not escape to other parameters
-	     and all other uses appear in NONLOCAL as well.  */
-	  lhs.type = DEREF;
-	  lhs.var = tem->id;
-	  lhs.offset = 0;
-	  rhs.type = SCALAR;
-	  rhs.var = nonlocal_id;
-	  rhs.offset = 0;
-	  process_constraint (new_constraint (lhs, rhs));
-	  if (!(flags & (EAF_NOESCAPE | EAF_DIRECT)))
-	    make_indirect_escape_constraint (tem);
-	  returns_uses = true;
-	}
-      else
-	make_escape_constraint (arg);
-    }
-
-  /* If we added to the calls uses solution make sure we account for
-     pointers to it to be returned.  */
-  if (returns_uses)
-    {
-      rhsc.var = get_call_use_vi (stmt)->id;
-      rhsc.offset = UNKNOWN_OFFSET;
-      rhsc.type = SCALAR;
-      results->safe_push (rhsc);
+      handle_call_arg (stmt, arg, results,
+		       flags | implicit_eaf_flags,
+		       callescape->id, writes_global_memory);
     }
 
   /* The static chain escapes as well.  */
   if (gimple_call_chain (stmt))
-    make_escape_constraint (gimple_call_chain (stmt));
+    handle_call_arg (stmt, gimple_call_chain (stmt), results,
+		     implicit_eaf_flags
+		     | gimple_call_static_chain_flags (stmt),
+		     callescape->id, writes_global_memory);
 
   /* And if we applied NRV the address of the return slot escapes as well.  */
   if (gimple_call_return_slot_opt_p (stmt)
       && gimple_call_lhs (stmt) != NULL_TREE
       && TREE_ADDRESSABLE (TREE_TYPE (gimple_call_lhs (stmt))))
     {
-      auto_vec<ce_s> tmpc;
-      struct constraint_expr lhsc, *c;
-      get_constraint_for_address_of (gimple_call_lhs (stmt), &tmpc);
-      lhsc.var = escaped_id;
-      lhsc.offset = 0;
-      lhsc.type = SCALAR;
-      FOR_EACH_VEC_ELT (tmpc, i, c)
-	process_constraint (new_constraint (lhsc, *c));
-    }
+      int flags = gimple_call_retslot_flags (stmt);
+      const int relevant_flags = EAF_NO_DIRECT_ESCAPE
+				 | EAF_NOT_RETURNED_DIRECTLY;
 
-  /* Regular functions return nonlocal memory.  */
-  rhsc.var = nonlocal_id;
-  rhsc.offset = 0;
-  rhsc.type = SCALAR;
-  results->safe_push (rhsc);
+      if (!(flags & EAF_UNUSED) && (flags & relevant_flags) != relevant_flags)
+	{
+	  auto_vec<ce_s> tmpc;
+
+	  get_constraint_for_address_of (gimple_call_lhs (stmt), &tmpc);
+
+	  if (!(flags & EAF_NO_DIRECT_ESCAPE))
+	    {
+	      make_constraints_to (callescape->id, tmpc);
+	      if (writes_global_memory)
+		make_constraints_to (escaped_id, tmpc);
+	    }
+	  if (!(flags & EAF_NOT_RETURNED_DIRECTLY))
+	    {
+	      struct constraint_expr *c;
+	      unsigned i;
+	      FOR_EACH_VEC_ELT (tmpc, i, c)
+		results->safe_push (*c);
+	    }
+	}
+    }
 }
 
 /* For non-IPA mode, generate constraints necessary for a call
@@ -4157,7 +4381,7 @@ handle_rhs_call (gcall *stmt, vec<ce_s> *results)
    the LHS point to global and escaped variables.  */
 
 static void
-handle_lhs_call (gcall *stmt, tree lhs, int flags, vec<ce_s> rhsc,
+handle_lhs_call (gcall *stmt, tree lhs, int flags, vec<ce_s> &rhsc,
 		 tree fndecl)
 {
   auto_vec<ce_s> lhsc;
@@ -4214,148 +4438,6 @@ handle_lhs_call (gcall *stmt, tree lhs, int flags, vec<ce_s> rhsc,
     }
   else
     process_all_all_constraints (lhsc, rhsc);
-}
-
-/* For non-IPA mode, generate constraints necessary for a call of a
-   const function that returns a pointer in the statement STMT.  */
-
-static void
-handle_const_call (gcall *stmt, vec<ce_s> *results)
-{
-  struct constraint_expr rhsc;
-  unsigned int k;
-  bool need_uses = false;
-
-  /* Treat nested const functions the same as pure functions as far
-     as the static chain is concerned.  */
-  if (gimple_call_chain (stmt))
-    {
-      varinfo_t uses = get_call_use_vi (stmt);
-      make_constraint_to (uses->id, gimple_call_chain (stmt));
-      need_uses = true;
-    }
-
-  /* And if we applied NRV the address of the return slot escapes as well.  */
-  if (gimple_call_return_slot_opt_p (stmt)
-      && gimple_call_lhs (stmt) != NULL_TREE
-      && TREE_ADDRESSABLE (TREE_TYPE (gimple_call_lhs (stmt))))
-    {
-      varinfo_t uses = get_call_use_vi (stmt);
-      auto_vec<ce_s> tmpc;
-      get_constraint_for_address_of (gimple_call_lhs (stmt), &tmpc);
-      make_constraints_to (uses->id, tmpc);
-      need_uses = true;
-    }
-
-  if (need_uses)
-    {
-      varinfo_t uses = get_call_use_vi (stmt);
-      make_any_offset_constraints (uses);
-      make_transitive_closure_constraints (uses);
-      rhsc.var = uses->id;
-      rhsc.offset = 0;
-      rhsc.type = SCALAR;
-      results->safe_push (rhsc);
-    }
-
-  /* May return offsetted arguments.  */
-  varinfo_t tem = NULL;
-  if (gimple_call_num_args (stmt) != 0)
-    {
-      tem = new_var_info (NULL_TREE, "callarg", true);
-      tem->is_reg_var = true;
-    }
-  for (k = 0; k < gimple_call_num_args (stmt); ++k)
-    {
-      tree arg = gimple_call_arg (stmt, k);
-      auto_vec<ce_s> argc;
-      get_constraint_for_rhs (arg, &argc);
-      make_constraints_to (tem->id, argc);
-    }
-  if (tem)
-    {
-      ce_s ce;
-      ce.type = SCALAR;
-      ce.var = tem->id;
-      ce.offset = UNKNOWN_OFFSET;
-      results->safe_push (ce);
-    }
-
-  /* May return addresses of globals.  */
-  rhsc.var = nonlocal_id;
-  rhsc.offset = 0;
-  rhsc.type = ADDRESSOF;
-  results->safe_push (rhsc);
-}
-
-/* For non-IPA mode, generate constraints necessary for a call to a
-   pure function in statement STMT.  */
-
-static void
-handle_pure_call (gcall *stmt, vec<ce_s> *results)
-{
-  struct constraint_expr rhsc;
-  unsigned i;
-  varinfo_t uses = NULL;
-
-  /* Memory reached from pointer arguments is call-used.  */
-  for (i = 0; i < gimple_call_num_args (stmt); ++i)
-    {
-      tree arg = gimple_call_arg (stmt, i);
-      int flags = gimple_call_arg_flags (stmt, i);
-
-      /* If the argument is not used we can ignore it.  */
-      if (flags & EAF_UNUSED)
-	continue;
-      if (!uses)
-	{
-	  uses = get_call_use_vi (stmt);
-	  make_any_offset_constraints (uses);
-	  make_transitive_closure_constraints (uses);
-	}
-      make_constraint_to (uses->id, arg);
-    }
-
-  /* The static chain is used as well.  */
-  if (gimple_call_chain (stmt))
-    {
-      if (!uses)
-	{
-	  uses = get_call_use_vi (stmt);
-	  make_any_offset_constraints (uses);
-	  make_transitive_closure_constraints (uses);
-	}
-      make_constraint_to (uses->id, gimple_call_chain (stmt));
-    }
-
-  /* And if we applied NRV the address of the return slot.  */
-  if (gimple_call_return_slot_opt_p (stmt)
-      && gimple_call_lhs (stmt) != NULL_TREE
-      && TREE_ADDRESSABLE (TREE_TYPE (gimple_call_lhs (stmt))))
-    {
-      if (!uses)
-	{
-	  uses = get_call_use_vi (stmt);
-	  make_any_offset_constraints (uses);
-	  make_transitive_closure_constraints (uses);
-	}
-      auto_vec<ce_s> tmpc;
-      get_constraint_for_address_of (gimple_call_lhs (stmt), &tmpc);
-      make_constraints_to (uses->id, tmpc);
-    }
-
-  /* Pure functions may return call-used and nonlocal memory.  */
-  if (uses)
-    {
-      rhsc.var = uses->id;
-      rhsc.offset = 0;
-      rhsc.type = SCALAR;
-      results->safe_push (rhsc);
-    }
-  rhsc.var = nonlocal_id;
-  rhsc.offset = 0;
-  rhsc.type = SCALAR;
-  results->safe_push (rhsc);
 }
 
 
@@ -4608,9 +4690,10 @@ find_func_aliases_for_builtin_call (struct function *fn, gcall *t)
       case BUILT_IN_REALLOC:
 	if (gimple_call_lhs (t))
 	  {
+	    auto_vec<ce_s> rhsc;
 	    handle_lhs_call (t, gimple_call_lhs (t),
 			     gimple_call_return_flags (t) | ERF_NOALIAS,
-			     vNULL, fndecl);
+			     rhsc, fndecl);
 	    get_constraint_for_ptr_offset (gimple_call_lhs (t),
 					   NULL_TREE, &lhsc);
 	    get_constraint_for_ptr_offset (gimple_call_arg (t, 0),
@@ -4892,6 +4975,9 @@ find_func_aliases_for_call (struct function *fn, gcall *t)
       && find_func_aliases_for_builtin_call (fn, t))
     return;
 
+  if (gimple_call_internal_p (t, IFN_DEFERRED_INIT))
+    return;
+
   fi = get_fi_for_callee (t);
   if (!in_ipa_mode
       || (fi->decl && fndecl && !fi->is_fn_info))
@@ -4904,13 +4990,13 @@ find_func_aliases_for_call (struct function *fn, gcall *t)
       if (flags & (ECF_CONST|ECF_NOVOPS))
 	{
 	  if (gimple_call_lhs (t))
-	    handle_const_call (t, &rhsc);
+	    handle_rhs_call (t, &rhsc, implicit_const_eaf_flags, false, false);
 	}
       /* Pure functions can return addresses in and of memory
 	 reachable from their arguments, but they are not an escape
 	 point for reachable memory of their arguments.  */
       else if (flags & (ECF_PURE|ECF_LOOPING_CONST_OR_PURE))
-	handle_pure_call (t, &rhsc);
+	handle_rhs_call (t, &rhsc, implicit_pure_eaf_flags, false, true);
       /* If the call is to a replaceable operator delete and results
 	 from a delete expression as opposed to a direct call to
 	 such operator, then the effects for PTA (in particular
@@ -4920,7 +5006,7 @@ find_func_aliases_for_call (struct function *fn, gcall *t)
 	       && gimple_call_from_new_or_delete (t))
 	;
       else
-	handle_rhs_call (t, &rhsc);
+	handle_rhs_call (t, &rhsc, 0, true, true);
       if (gimple_call_lhs (t))
 	handle_lhs_call (t, gimple_call_lhs (t),
 			 gimple_call_return_flags (t), rhsc, fndecl);
@@ -5681,7 +5767,7 @@ fieldoff_compare (const void *pa, const void *pb)
 
 /* Sort a fieldstack according to the field offset and sizes.  */
 static void
-sort_fieldstack (vec<fieldoff_s> fieldstack)
+sort_fieldstack (vec<fieldoff_s> &fieldstack)
 {
   fieldstack.qsort (fieldoff_compare);
 }
@@ -6091,7 +6177,7 @@ create_function_info_for (tree decl, const char *name, bool add_id,
    FIELDSTACK is assumed to be sorted by offset.  */
 
 static bool
-check_for_overlaps (vec<fieldoff_s> fieldstack)
+check_for_overlaps (const vec<fieldoff_s> &fieldstack)
 {
   fieldoff_s *fo = NULL;
   unsigned int i;
@@ -6740,7 +6826,9 @@ find_what_p_points_to (tree fndecl, tree p)
   struct ptr_info_def *pi;
   tree lookup_p = p;
   varinfo_t vi;
-  bool nonnull = get_ptr_nonnull (p);
+  value_range vr;
+  get_range_query (DECL_STRUCT_FUNCTION (fndecl))->range_of_expr (vr, p);
+  bool nonnull = vr.nonzero_p ();
 
   /* For parameters, get at the points-to set for the actual parm
      decl.  */
@@ -6758,8 +6846,7 @@ find_what_p_points_to (tree fndecl, tree p)
   pi->pt = find_what_var_points_to (fndecl, vi);
   /* Conservatively set to NULL from PTA (to true). */
   pi->pt.null = 1;
-  /* Preserve pointer nonnull computed by VRP.  See get_ptr_nonnull
-     in gcc/tree-ssaname.c for more information.  */
+  /* Preserve pointer nonnull globally computed.  */
   if (nonnull)
     set_ptr_nonnull (p);
 }
@@ -7554,43 +7641,70 @@ compute_points_to_sets (void)
 	  pt = gimple_call_use_set (stmt);
 	  if (gimple_call_flags (stmt) & ECF_CONST)
 	    memset (pt, 0, sizeof (struct pt_solution));
-	  else if ((vi = lookup_call_use_vi (stmt)) != NULL)
-	    {
-	      *pt = find_what_var_points_to (cfun->decl, vi);
-	      /* Escaped (and thus nonlocal) variables are always
-	         implicitly used by calls.  */
-	      /* ???  ESCAPED can be empty even though NONLOCAL
-		 always escaped.  */
-	      pt->nonlocal = 1;
-	      pt->escaped = 1;
-	    }
 	  else
 	    {
-	      /* If there is nothing special about this call then
-		 we have made everything that is used also escape.  */
-	      *pt = cfun->gimple_df->escaped;
-	      pt->nonlocal = 1;
+	      bool uses_global_memory = true;
+	      bool reads_global_memory = true;
+
+	      determine_global_memory_access (stmt, NULL,
+					      &reads_global_memory,
+					      &uses_global_memory);
+	      if ((vi = lookup_call_use_vi (stmt)) != NULL)
+		{
+		  *pt = find_what_var_points_to (cfun->decl, vi);
+		  /* Escaped (and thus nonlocal) variables are always
+		     implicitly used by calls.  */
+		  /* ???  ESCAPED can be empty even though NONLOCAL
+		     always escaped.  */
+		  if (uses_global_memory)
+		    {
+		      pt->nonlocal = 1;
+		      pt->escaped = 1;
+		    }
+		}
+	      else if (uses_global_memory)
+		{
+		  /* If there is nothing special about this call then
+		     we have made everything that is used also escape.  */
+		  *pt = cfun->gimple_df->escaped;
+		  pt->nonlocal = 1;
+		}
+	      else
+		memset (pt, 0, sizeof (struct pt_solution));
 	    }
 
 	  pt = gimple_call_clobber_set (stmt);
 	  if (gimple_call_flags (stmt) & (ECF_CONST|ECF_PURE|ECF_NOVOPS))
 	    memset (pt, 0, sizeof (struct pt_solution));
-	  else if ((vi = lookup_call_clobber_vi (stmt)) != NULL)
-	    {
-	      *pt = find_what_var_points_to (cfun->decl, vi);
-	      /* Escaped (and thus nonlocal) variables are always
-	         implicitly clobbered by calls.  */
-	      /* ???  ESCAPED can be empty even though NONLOCAL
-		 always escaped.  */
-	      pt->nonlocal = 1;
-	      pt->escaped = 1;
-	    }
 	  else
 	    {
-	      /* If there is nothing special about this call then
-		 we have made everything that is used also escape.  */
-	      *pt = cfun->gimple_df->escaped;
-	      pt->nonlocal = 1;
+	      bool writes_global_memory = true;
+
+	      determine_global_memory_access (stmt, &writes_global_memory,
+					      NULL, NULL);
+
+	      if ((vi = lookup_call_clobber_vi (stmt)) != NULL)
+		{
+		  *pt = find_what_var_points_to (cfun->decl, vi);
+		  /* Escaped (and thus nonlocal) variables are always
+		     implicitly clobbered by calls.  */
+		  /* ???  ESCAPED can be empty even though NONLOCAL
+		     always escaped.  */
+		  if (writes_global_memory)
+		    {
+		      pt->nonlocal = 1;
+		      pt->escaped = 1;
+		    }
+		}
+	      else if (writes_global_memory)
+		{
+		  /* If there is nothing special about this call then
+		     we have made everything that is used also escape.  */
+		  *pt = cfun->gimple_df->escaped;
+		  pt->nonlocal = 1;
+		}
+	      else
+		memset (pt, 0, sizeof (struct pt_solution));
 	    }
 	}
     }
@@ -8195,10 +8309,12 @@ ipa_pta_execute (void)
   FOR_EACH_DEFINED_FUNCTION (node)
     {
       varinfo_t vi;
-      /* Nodes without a body are not interesting.  Especially do not
-         visit clones at this point for now - we get duplicate decls
-	 there for inline clones at least.  */
-      if (!node->has_gimple_body_p () || node->inlined_to)
+      /* Nodes without a body in this partition are not interesting.
+	 Especially do not visit clones at this point for now - we
+	 get duplicate decls there for inline clones at least.  */
+      if (!node->has_gimple_body_p ()
+	  || node->in_other_partition
+	  || node->inlined_to)
 	continue;
       node->get_body ();
 
@@ -8276,8 +8392,10 @@ ipa_pta_execute (void)
       struct function *func;
       basic_block bb;
 
-      /* Nodes without a body are not interesting.  */
-      if (!node->has_gimple_body_p () || node->clone_of)
+      /* Nodes without a body in this partition are not interesting.  */
+      if (!node->has_gimple_body_p ()
+	  || node->in_other_partition
+	  || node->clone_of)
 	continue;
 
       if (dump_file)
@@ -8406,8 +8524,10 @@ ipa_pta_execute (void)
       unsigned i;
       basic_block bb;
 
-      /* Nodes without a body are not interesting.  */
-      if (!node->has_gimple_body_p () || node->clone_of)
+      /* Nodes without a body in this partition are not interesting.  */
+      if (!node->has_gimple_body_p ()
+	  || node->in_other_partition
+	  || node->clone_of)
 	continue;
 
       fn = DECL_STRUCT_FUNCTION (node->decl);

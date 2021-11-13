@@ -731,12 +731,11 @@ logical_array_check (gfc_expr *array, int n)
 static bool
 array_check (gfc_expr *e, int n)
 {
-  if (e->ts.type == BT_CLASS && gfc_expr_attr (e).class_ok
+  if (e->rank != 0 && e->ts.type == BT_CLASS && gfc_expr_attr (e).class_ok
 	&& CLASS_DATA (e)->attr.dimension
 	&& CLASS_DATA (e)->as->rank)
     {
       gfc_add_class_array_ref (e);
-      return true;
     }
 
   if (e->rank != 0 && e->ts.type != BT_PROCEDURE)
@@ -1521,7 +1520,9 @@ gfc_check_associated (gfc_expr *pointer, gfc_expr *target)
   t = true;
   if (!same_type_check (pointer, 0, target, 1, true))
     t = false;
-  if (!rank_check (target, 0, pointer->rank))
+  /* F2018 C838 explicitly allows an assumed-rank variable as the first
+     argument of intrinsic inquiry functions.  */
+  if (pointer->rank != -1 && !rank_check (target, 0, pointer->rank))
     t = false;
   if (target->rank > 0)
     {
@@ -2264,7 +2265,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
   attr = gfc_expr_attr (op);
   if (!attr.pure || !attr.function)
     {
-      gfc_error ("OPERATOR argument at %L must be a PURE function",
+      gfc_error ("OPERATION argument at %L must be a PURE function",
 		 &op->where);
       return false;
     }
@@ -2291,7 +2292,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
 
   if (!formal || !formal->next || formal->next->next)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall have two "
+      gfc_error ("The function passed as OPERATION at %L shall have two "
 		 "arguments", &op->where);
       return false;
     }
@@ -2302,7 +2303,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
   if (!gfc_compare_types (&a->ts, &sym->result->ts))
     {
       gfc_error ("The A argument at %L has type %s but the function passed as "
-		 "OPERATOR at %L returns %s",
+		 "OPERATION at %L returns %s",
 		 &a->where, gfc_typename (a), &op->where,
 		 gfc_typename (&sym->result->ts));
       return false;
@@ -2310,7 +2311,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
   if (!gfc_compare_types (&a->ts, &formal->sym->ts)
       || !gfc_compare_types (&a->ts, &formal->next->sym->ts))
     {
-      gfc_error ("The function passed as OPERATOR at %L has arguments of type "
+      gfc_error ("The function passed as OPERATION at %L has arguments of type "
 		 "%s and %s but shall have type %s", &op->where,
 		 gfc_typename (&formal->sym->ts),
 		 gfc_typename (&formal->next->sym->ts), gfc_typename (a));
@@ -2321,7 +2322,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
       || formal->next->sym->attr.allocatable || formal->sym->attr.pointer
       || formal->next->sym->attr.pointer)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall have scalar "
+      gfc_error ("The function passed as OPERATION at %L shall have scalar "
 		 "nonallocatable nonpointer arguments and return a "
 		 "nonallocatable nonpointer scalar", &op->where);
       return false;
@@ -2329,21 +2330,21 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
 
   if (formal->sym->attr.value != formal->next->sym->attr.value)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall have the VALUE "
+      gfc_error ("The function passed as OPERATION at %L shall have the VALUE "
 		 "attribute either for none or both arguments", &op->where);
       return false;
     }
 
   if (formal->sym->attr.target != formal->next->sym->attr.target)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall have the TARGET "
+      gfc_error ("The function passed as OPERATION at %L shall have the TARGET "
 		 "attribute either for none or both arguments", &op->where);
       return false;
     }
 
   if (formal->sym->attr.asynchronous != formal->next->sym->attr.asynchronous)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall have the "
+      gfc_error ("The function passed as OPERATION at %L shall have the "
 		 "ASYNCHRONOUS attribute either for none or both arguments",
 		 &op->where);
       return false;
@@ -2351,7 +2352,7 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
 
   if (formal->sym->attr.optional || formal->next->sym->attr.optional)
     {
-      gfc_error ("The function passed as OPERATOR at %L shall not have the "
+      gfc_error ("The function passed as OPERATION at %L shall not have the "
 		 "OPTIONAL attribute for either of the arguments", &op->where);
       return false;
     }
@@ -2382,14 +2383,14 @@ gfc_check_co_reduce (gfc_expr *a, gfc_expr *op, gfc_expr *result_image,
 	       || (formal_size2 && actual_size != formal_size2)))
 	{
 	  gfc_error ("The character length of the A argument at %L and of the "
-		     "arguments of the OPERATOR at %L shall be the same",
+		     "arguments of the OPERATION at %L shall be the same",
 		     &a->where, &op->where);
 	  return false;
 	}
       if (actual_size && result_size && actual_size != result_size)
 	{
 	  gfc_error ("The character length of the A argument at %L and of the "
-		     "function result of the OPERATOR at %L shall be the same",
+		     "function result of the OPERATION at %L shall be the same",
 		     &a->where, &op->where);
 	  return false;
 	}
@@ -3239,7 +3240,7 @@ gfc_check_intconv (gfc_expr *x)
   if (strcmp (gfc_current_intrinsic, "short") == 0
       || strcmp (gfc_current_intrinsic, "long") == 0)
     {
-      gfc_error ("%qs intrinsic subprogram at %L has been deprecated.  "
+      gfc_error ("%qs intrinsic subprogram at %L has been removed.  "
 		 "Use INT intrinsic subprogram.", gfc_current_intrinsic,
 		 &x->where);
       return false;
@@ -4529,7 +4530,9 @@ gfc_check_present (gfc_expr *a)
       return false;
     }
 
-  if (!sym->attr.optional)
+  /* For CLASS, the optional attribute might be set at either location. */
+  if ((sym->ts.type != BT_CLASS || !CLASS_DATA (sym)->attr.optional)
+      && !sym->attr.optional)
     {
       gfc_error ("%qs argument of %qs intrinsic at %L must be of "
 		 "an OPTIONAL dummy variable",
@@ -5083,8 +5086,18 @@ gfc_check_shape (gfc_expr *source, gfc_expr *kind)
   if (gfc_invalid_null_arg (source))
     return false;
 
+  if (!kind_check (kind, 1, BT_INTEGER))
+    return false;
+  if (kind && !gfc_notify_std (GFC_STD_F2003, "%qs intrinsic "
+			       "with KIND argument at %L",
+			       gfc_current_intrinsic, &kind->where))
+    return false;
+
   if (source->rank == 0 || source->expr_type != EXPR_VARIABLE)
     return true;
+
+  if (source->ref == NULL)
+    return false;
 
   ar = gfc_find_array_ref (source);
 
@@ -5094,13 +5107,6 @@ gfc_check_shape (gfc_expr *source, gfc_expr *kind)
 		 "an assumed size array", &source->where);
       return false;
     }
-
-  if (!kind_check (kind, 1, BT_INTEGER))
-    return false;
-  if (kind && !gfc_notify_std (GFC_STD_F2003, "%qs intrinsic "
-			       "with KIND argument at %L",
-			       gfc_current_intrinsic, &kind->where))
-    return false;
 
   return true;
 }

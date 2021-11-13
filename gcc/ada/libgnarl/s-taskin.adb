@@ -127,7 +127,7 @@ package body System.Tasking is
       end if;
       pragma Assert (T.Common.Domain /= null);
 
-      T.Common.Current_Priority         := 0;
+      T.Common.Current_Priority         := Priority'First;
       T.Common.Protected_Action_Nesting := 0;
       T.Common.Call                     := null;
       T.Common.Task_Arg                 := Task_Arg;
@@ -173,13 +173,13 @@ package body System.Tasking is
    Main_Task_Image : constant String := "main_task";
    --  Image of environment task
 
-   Main_Priority : Integer;
+   Main_Priority : constant Integer;
    pragma Import (C, Main_Priority, "__gl_main_priority");
    --  Priority for main task. Note that this is of type Integer, not Priority,
    --  because we use the value -1 to indicate the default main priority, and
    --  that is of course not in Priority'range.
 
-   Main_CPU : Integer;
+   Main_CPU : constant Integer;
    pragma Import (C, Main_CPU, "__gl_main_cpu");
    --  Affinity for main task. Note that this is of type Integer, not
    --  CPU_Range, because we use the value -1 to indicate the unassigned

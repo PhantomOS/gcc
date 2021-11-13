@@ -30,10 +30,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "flags.h"
 
 static void
-arc_option_init_struct (struct gcc_options *opts)
+arc_option_init_struct (struct gcc_options *opts ATTRIBUTE_UNUSED)
 {
-  opts->x_flag_no_common = 255; /* Mark as not user-initialized.  */
-
   /* Which cpu we're compiling for (ARC600, ARC601, ARC700, ARCv2).  */
   arc_cpu = PROCESSOR_NONE;
 }
@@ -62,7 +60,6 @@ static const struct default_options arc_option_optimization_table[] =
     { OPT_LEVELS_SIZE, OPT_fif_conversion, NULL, 0 },
     { OPT_LEVELS_1_PLUS, OPT_fomit_frame_pointer, NULL, 1 },
     { OPT_LEVELS_3_PLUS_SPEED_ONLY, OPT_msize_level_, NULL, 0 },
-    { OPT_LEVELS_3_PLUS_SPEED_ONLY, OPT_malign_call, NULL, 1 },
     { OPT_LEVELS_NONE, 0, NULL, 0 }
   };
 

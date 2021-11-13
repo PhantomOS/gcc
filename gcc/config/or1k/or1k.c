@@ -73,6 +73,10 @@ struct GTY(()) machine_function
 
   /* Remember where the set_got_placeholder is located.  */
   rtx_insn *set_got_insn;
+
+  /* Remember where mcount args are stored so we can insert set_got_insn
+     after.  */
+  rtx_insn *set_mcount_arg_insn;
 };
 
 /* Zero initialization is OK for all current fields.  */
@@ -415,6 +419,25 @@ or1k_expand_epilogue (void)
 			   EH_RETURN_STACKADJ_RTX));
 }
 
+/* Worker for PROFILE_HOOK.
+   The OpenRISC profile hook uses the link register which will get clobbered by
+   the GOT setup RTX.  This sets up a placeholder to allow injecting of the GOT
+   setup RTX to avoid clobbering.  */
+
+void
+or1k_profile_hook (void)
+{
+  rtx a1 = gen_rtx_REG (Pmode, 3);
+  rtx ra = get_hard_reg_initial_val (Pmode, LR_REGNUM);
+  rtx fun = gen_rtx_SYMBOL_REF (Pmode, "_mcount");
+
+  /* Keep track of where we setup the _mcount argument so we can insert the
+     GOT setup RTX after it.  */
+  cfun->machine->set_mcount_arg_insn = emit_move_insn (a1, ra);
+
+  emit_library_call (fun, LCT_NORMAL, VOIDmode, a1, Pmode);
+}
+
 /* Worker for TARGET_INIT_PIC_REG.
    Initialize the cfun->machine->set_got_insn rtx and insert it at the entry
    of the current function.  The rtx is just a temporary placeholder for
@@ -423,17 +446,25 @@ or1k_expand_epilogue (void)
 static void
 or1k_init_pic_reg (void)
 {
-  start_sequence ();
 
-  cfun->machine->set_got_insn
-    = emit_insn (gen_set_got_tmp (pic_offset_table_rtx));
+  if (crtl->profile)
+    cfun->machine->set_got_insn =
+      emit_insn_after (gen_set_got_tmp (pic_offset_table_rtx),
+		       cfun->machine->set_mcount_arg_insn);
+  else
+    {
+      start_sequence ();
 
-  rtx_insn *seq = get_insns ();
-  end_sequence ();
+      cfun->machine->set_got_insn =
+	emit_insn (gen_set_got_tmp (pic_offset_table_rtx));
 
-  edge entry_edge = single_succ_edge (ENTRY_BLOCK_PTR_FOR_FN (cfun));
-  insert_insn_on_edge (seq, entry_edge);
-  commit_one_edge_insertion (entry_edge);
+      rtx_insn *seq = get_insns ();
+      end_sequence ();
+
+      edge entry_edge = single_succ_edge (ENTRY_BLOCK_PTR_FOR_FN (cfun));
+      insert_insn_on_edge (seq, entry_edge);
+      commit_one_edge_insertion (entry_edge);
+    }
 }
 
 #undef TARGET_INIT_PIC_REG
@@ -480,7 +511,7 @@ or1k_frame_pointer_required ()
 {
   /* ??? While IRA checks accesses_prior_frames, reload does not.
      We do want the frame pointer for this case.  */
-  return (crtl->accesses_prior_frames || crtl->profile);
+  return (crtl->accesses_prior_frames);
 }
 
 /* Expand the "eh_return" pattern.
@@ -750,7 +781,14 @@ or1k_legitimize_address_1 (rtx x, rtx scratch)
 	    {
 	      base = gen_sym_unspec (base, UNSPEC_GOT);
 	      crtl->uses_pic_offset_table = 1;
-	      t2 = gen_rtx_LO_SUM (Pmode, pic_offset_table_rtx, base);
+	      if (TARGET_CMODEL_LARGE)
+		{
+	          emit_insn (gen_rtx_SET (t1, gen_rtx_HIGH (Pmode, base)));
+	          emit_insn (gen_add3_insn (t1, t1, pic_offset_table_rtx));
+	          t2 = gen_rtx_LO_SUM (Pmode, t1, base);
+		}
+	      else
+	        t2 = gen_rtx_LO_SUM (Pmode, pic_offset_table_rtx, base);
 	      t2 = gen_const_mem (Pmode, t2);
 	      emit_insn (gen_rtx_SET (t1, t2));
 	      base = t1;
@@ -1089,7 +1127,7 @@ print_reloc (FILE *stream, rtx x, HOST_WIDE_INT add, reloc_kind kind)
      no special markup.  */
   static const char * const relocs[RKIND_MAX][RTYPE_MAX] = {
     { "lo", "got", "gotofflo", "tpofflo", "gottpofflo", "tlsgdlo" },
-    { "ha", NULL,  "gotoffha", "tpoffha", "gottpoffha", "tlsgdhi" },
+    { "ha", "gotha", "gotoffha", "tpoffha", "gottpoffha", "tlsgdhi" },
   };
   reloc_type type = RTYPE_DIRECT;
 

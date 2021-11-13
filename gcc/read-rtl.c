@@ -36,12 +36,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "read-md.h"
 #include "gensupport.h"
 
-#ifndef GENERATOR_FILE
-#include "function.h"
-#include "memmodel.h"
-#include "emit-rtl.h"
-#endif
-
 /* One element in a singly-linked list of (integer, string) pairs.  */
 struct map_value {
   struct map_value *next;
@@ -835,7 +829,7 @@ md_reader::handle_overloaded_name (rtx original, vec<mapping *> *iterators)
    gives the iterator associated with argument I of ONAME.  */
 
 static void
-add_overload_instance (overloaded_name *oname, vec<mapping *> iterators, rtx x)
+add_overload_instance (overloaded_name *oname, const vec<mapping *> &iterators, rtx x)
 {
   /* Create the instance.  */
   overloaded_instance *instance = new overloaded_instance;

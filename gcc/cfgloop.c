@@ -162,14 +162,12 @@ flow_loop_dump (const class loop *loop, FILE *file,
 void
 flow_loops_dump (FILE *file, void (*loop_dump_aux) (const class loop *, FILE *, int), int verbose)
 {
-  class loop *loop;
-
   if (!current_loops || ! file)
     return;
 
   fprintf (file, ";; %d loops found\n", number_of_loops (cfun));
 
-  FOR_EACH_LOOP (loop, LI_INCLUDE_ROOT)
+  for (auto loop : loops_list (cfun, LI_INCLUDE_ROOT))
     {
       flow_loop_dump (loop, file, loop_dump_aux, verbose);
     }
@@ -559,8 +557,7 @@ sort_sibling_loops (function *fn)
   free (rc_order);
 
   auto_vec<loop_p, 3> siblings;
-  loop_p loop;
-  FOR_EACH_LOOP_FN (fn, loop, LI_INCLUDE_ROOT)
+  for (auto loop : loops_list (fn, LI_INCLUDE_ROOT))
     if (loop->inner && loop->inner->next)
       {
 	loop_p sibling = loop->inner;
@@ -836,9 +833,7 @@ disambiguate_multiple_latches (class loop *loop)
 void
 disambiguate_loops_with_multiple_latches (void)
 {
-  class loop *loop;
-
-  FOR_EACH_LOOP (loop, 0)
+  for (auto loop : loops_list (cfun, 0))
     {
       if (!loop->latch)
 	disambiguate_multiple_latches (loop);
@@ -1457,7 +1452,7 @@ verify_loop_structure (void)
   auto_sbitmap visited (last_basic_block_for_fn (cfun));
   bitmap_clear (visited);
   bbs = XNEWVEC (basic_block, n_basic_blocks_for_fn (cfun));
-  FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+  for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
     {
       unsigned n;
 
@@ -1503,7 +1498,7 @@ verify_loop_structure (void)
   free (bbs);
 
   /* Check headers and latches.  */
-  FOR_EACH_LOOP (loop, 0)
+  for (auto loop : loops_list (cfun, 0))
     {
       i = loop->num;
       if (loop->header == NULL)
@@ -1555,30 +1550,34 @@ verify_loop_structure (void)
 	  error ("loop %d%'s header does not belong directly to it", i);
 	  err = 1;
 	}
-      if (loops_state_satisfies_p (LOOPS_HAVE_MARKED_IRREDUCIBLE_REGIONS)
-	  && (loop_latch_edge (loop)->flags & EDGE_IRREDUCIBLE_LOOP))
+      if (loops_state_satisfies_p (LOOPS_HAVE_MARKED_IRREDUCIBLE_REGIONS))
 	{
-	  error ("loop %d%'s latch is marked as part of irreducible region", i);
-	  err = 1;
+	  edge_iterator ei;
+	  FOR_EACH_EDGE (e, ei, loop->header->preds)
+	    if (dominated_by_p (CDI_DOMINATORS, e->src, loop->header)
+		&& e->flags & EDGE_IRREDUCIBLE_LOOP)
+	      {
+		error ("loop %d%'s latch is marked as part of irreducible"
+		       " region", i);
+		err = 1;
+	      }
 	}
     }
 
   /* Check irreducible loops.  */
   if (loops_state_satisfies_p (LOOPS_HAVE_MARKED_IRREDUCIBLE_REGIONS))
     {
-      auto_edge_flag saved_irr_mask (cfun);
-      /* Record old info.  */
-      auto_sbitmap irreds (last_basic_block_for_fn (cfun));
+      auto_edge_flag saved_edge_irr (cfun);
+      auto_bb_flag saved_bb_irr (cfun);
+      /* Save old info.  */
       FOR_EACH_BB_FN (bb, cfun)
 	{
 	  edge_iterator ei;
 	  if (bb->flags & BB_IRREDUCIBLE_LOOP)
-	    bitmap_set_bit (irreds, bb->index);
-	  else
-	    bitmap_clear_bit (irreds, bb->index);
+	    bb->flags |= saved_bb_irr;
 	  FOR_EACH_EDGE (e, ei, bb->succs)
 	    if (e->flags & EDGE_IRREDUCIBLE_LOOP)
-	      e->flags |= saved_irr_mask;
+	      e->flags |= saved_edge_irr;
 	}
 
       /* Recount it.  */
@@ -1590,40 +1589,41 @@ verify_loop_structure (void)
 	  edge_iterator ei;
 
 	  if ((bb->flags & BB_IRREDUCIBLE_LOOP)
-	      && !bitmap_bit_p (irreds, bb->index))
+	      && !(bb->flags & saved_bb_irr))
 	    {
 	      error ("basic block %d should be marked irreducible", bb->index);
 	      err = 1;
 	    }
 	  else if (!(bb->flags & BB_IRREDUCIBLE_LOOP)
-	      && bitmap_bit_p (irreds, bb->index))
+		   && (bb->flags & saved_bb_irr))
 	    {
 	      error ("basic block %d should not be marked irreducible", bb->index);
 	      err = 1;
 	    }
+	  bb->flags &= ~saved_bb_irr;
 	  FOR_EACH_EDGE (e, ei, bb->succs)
 	    {
 	      if ((e->flags & EDGE_IRREDUCIBLE_LOOP)
-		  && !(e->flags & saved_irr_mask))
+		  && !(e->flags & saved_edge_irr))
 		{
 		  error ("edge from %d to %d should be marked irreducible",
 			 e->src->index, e->dest->index);
 		  err = 1;
 		}
 	      else if (!(e->flags & EDGE_IRREDUCIBLE_LOOP)
-		       && (e->flags & saved_irr_mask))
+		       && (e->flags & saved_edge_irr))
 		{
 		  error ("edge from %d to %d should not be marked irreducible",
 			 e->src->index, e->dest->index);
 		  err = 1;
 		}
-	      e->flags &= ~saved_irr_mask;
+	      e->flags &= ~saved_edge_irr;
 	    }
 	}
     }
 
   /* Check the recorded loop exits.  */
-  FOR_EACH_LOOP (loop, 0)
+  for (auto loop : loops_list (cfun, 0))
     {
       if (!loop->exits || loop->exits->e != NULL)
 	{
@@ -1717,7 +1717,7 @@ verify_loop_structure (void)
 	  err = 1;
 	}
 
-      FOR_EACH_LOOP (loop, 0)
+      for (auto loop : loops_list (cfun, 0))
 	{
 	  eloops = 0;
 	  for (exit = loop->exits->next; exit->e; exit = exit->next)
@@ -2103,3 +2103,69 @@ mark_loop_for_removal (loop_p loop)
   loop->latch = NULL;
   loops_state_set (LOOPS_NEED_FIXUP);
 }
+
+/* Starting from loop tree ROOT, walk loop tree as the visiting
+   order specified by FLAGS.  The supported visiting orders
+   are:
+     - LI_ONLY_INNERMOST
+     - LI_FROM_INNERMOST
+     - Preorder (if neither of above is specified)  */
+
+void
+loops_list::walk_loop_tree (class loop *root, unsigned flags)
+{
+  bool only_innermost_p = flags & LI_ONLY_INNERMOST;
+  bool from_innermost_p = flags & LI_FROM_INNERMOST;
+  bool preorder_p = !(only_innermost_p || from_innermost_p);
+
+  /* Early handle root without any inner loops, make later
+     processing simpler, that is all loops processed in the
+     following while loop are impossible to be root.  */
+  if (!root->inner)
+    {
+      if (flags & LI_INCLUDE_ROOT)
+	this->to_visit.quick_push (root->num);
+      return;
+    }
+  else if (preorder_p && flags & LI_INCLUDE_ROOT)
+    this->to_visit.quick_push (root->num);
+
+  class loop *aloop;
+  for (aloop = root->inner;
+       aloop->inner != NULL;
+       aloop = aloop->inner)
+    {
+      if (preorder_p)
+	this->to_visit.quick_push (aloop->num);
+      continue;
+    }
+
+  while (1)
+    {
+      gcc_assert (aloop != root);
+      if (from_innermost_p || aloop->inner == NULL)
+	this->to_visit.quick_push (aloop->num);
+
+      if (aloop->next)
+	{
+	  for (aloop = aloop->next;
+	       aloop->inner != NULL;
+	       aloop = aloop->inner)
+	    {
+	      if (preorder_p)
+		this->to_visit.quick_push (aloop->num);
+	      continue;
+	    }
+	}
+      else if (loop_outer (aloop) == root)
+	break;
+      else
+	aloop = loop_outer (aloop);
+    }
+
+  /* When visiting from innermost, we need to consider root here
+     since the previous while loop doesn't handle it.  */
+  if (from_innermost_p && flags & LI_INCLUDE_ROOT)
+    this->to_visit.quick_push (root->num);
+}
+

@@ -32,7 +32,7 @@
 #include <debug/safe_sequence.h>
 #include <debug/safe_container.h>
 #include <debug/safe_iterator.h>
-#include <utility>
+#include <bits/stl_pair.h>
 
 namespace std _GLIBCXX_VISIBILITY(default)
 {
@@ -114,10 +114,11 @@ namespace __debug
       multimap(const allocator_type& __a)
       : _Base(__a) { }
 
-      multimap(const multimap& __m, const allocator_type& __a)
+      multimap(const multimap& __m,
+	       const __type_identity_t<allocator_type>& __a)
       : _Base(__m, __a) { }
 
-      multimap(multimap&& __m, const allocator_type& __a)
+      multimap(multimap&& __m, const __type_identity_t<allocator_type>& __a)
       noexcept( noexcept(_Base(std::move(__m._M_base()), __a)) )
       : _Safe(std::move(__m._M_safe()), __a),
 	_Base(std::move(__m._M_base()), __a) { }
@@ -151,15 +152,7 @@ namespace __debug
       multimap(_Base_ref __x)
       : _Base(__x._M_ref) { }
 
-#if __cplusplus < 201103L
-      multimap&
-      operator=(const multimap& __x)
-      {
-	this->_M_safe() = __x;
-	_M_base() = __x;
-	return *this;
-      }
-#else
+#if __cplusplus >= 201103L
       multimap&
       operator=(const multimap&) = default;
 

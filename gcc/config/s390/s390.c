@@ -3291,7 +3291,7 @@ s390_loadrelative_operand_p (rtx addr, rtx *symref, HOST_WIDE_INT *addend)
   if (GET_CODE (addr) == SYMBOL_REF
       || (GET_CODE (addr) == UNSPEC
 	  && (XINT (addr, 1) == UNSPEC_GOTENT
-	      || XINT (addr, 1) == UNSPEC_PLT)))
+	      || XINT (addr, 1) == UNSPEC_PLT31)))
     {
       if (symref)
 	*symref = addr;
@@ -4964,7 +4964,7 @@ legitimize_pic_address (rtx orig, rtx reg)
        || (SYMBOL_REF_P (addr) && s390_rel_address_ok_p (addr))
        || (GET_CODE (addr) == UNSPEC &&
 	   (XINT (addr, 1) == UNSPEC_GOTENT
-	    || XINT (addr, 1) == UNSPEC_PLT)))
+	    || XINT (addr, 1) == UNSPEC_PLT31)))
       && GET_CODE (addend) == CONST_INT)
     {
       /* This can be locally addressed.  */
@@ -5125,7 +5125,7 @@ legitimize_pic_address (rtx orig, rtx reg)
 
 	  /* For @PLT larl is used.  This is handled like local
 	     symbol refs.  */
-	case UNSPEC_PLT:
+	case UNSPEC_PLT31:
 	  gcc_unreachable ();
 	  break;
 
@@ -5191,7 +5191,10 @@ s390_emit_tls_call_insn (rtx result_reg, rtx tls_call)
     emit_insn (s390_load_got ());
 
   if (!s390_tls_symbol)
-    s390_tls_symbol = gen_rtx_SYMBOL_REF (Pmode, "__tls_get_offset");
+    {
+      s390_tls_symbol = gen_rtx_SYMBOL_REF (Pmode, "__tls_get_offset");
+      SYMBOL_REF_FLAGS (s390_tls_symbol) |= SYMBOL_FLAG_FUNCTION;
+    }
 
   insn = s390_emit_call (s390_tls_symbol, tls_call, result_reg,
 			 gen_rtx_REG (Pmode, RETURN_REGNUM));
@@ -6411,6 +6414,15 @@ s390_expand_insv (rtx dest, rtx op1, rtx op2, rtx src)
   if (bitsize + bitpos > GET_MODE_BITSIZE (mode))
     return false;
 
+  /* Just a move.  */
+  if (bitpos == 0
+      && bitsize == GET_MODE_BITSIZE (GET_MODE (src))
+      && mode == GET_MODE (src))
+    {
+      emit_move_insn (dest, src);
+      return true;
+    }
+
   /* Generate INSERT IMMEDIATE (IILL et al).  */
   /* (set (ze (reg)) (const_int)).  */
   if (TARGET_ZARCH
@@ -6507,6 +6519,7 @@ s390_expand_insv (rtx dest, rtx op1, rtx op2, rtx src)
       && (bitpos & 32) == ((bitpos + bitsize - 1) & 32)
       && MEM_P (src)
       && (mode == DImode || mode == SImode)
+      && mode != smode
       && register_operand (dest, mode))
     {
       /* Emit a strict_low_part pattern if possible.  */
@@ -7009,6 +7022,42 @@ s390_expand_vec_init (rtx target, rtx vals)
 							 GEN_INT (i), target),
 					      UNSPEC_VEC_SET)));
     }
+}
+
+/* Return a parallel of constant integers to be used as permutation
+   vector for a vector merge operation in MODE.  If HIGH_P is true the
+   left-most elements of the source vectors are merged otherwise the
+   right-most elements.  */
+rtx
+s390_expand_merge_perm_const (machine_mode mode, bool high_p)
+{
+  int nelts = GET_MODE_NUNITS (mode);
+  rtx perm[16];
+  int addend = high_p ? 0 : nelts;
+
+  for (int i = 0; i < nelts; i++)
+    perm[i] = GEN_INT ((i + addend) / 2 + (i % 2) * nelts);
+
+  return gen_rtx_PARALLEL (VOIDmode, gen_rtvec_v (nelts, perm));
+}
+
+/* Emit RTL to implement a vector merge operation of SRC1 and SRC2
+   which creates the result in TARGET. HIGH_P determines whether a
+   merge hi or lo will be generated.  */
+void
+s390_expand_merge (rtx target, rtx src1, rtx src2, bool high_p)
+{
+  machine_mode mode = GET_MODE (target);
+  opt_machine_mode opt_mode_2x = mode_for_vector (GET_MODE_INNER (mode),
+						  2 * GET_MODE_NUNITS (mode));
+  gcc_assert (opt_mode_2x.exists ());
+  machine_mode mode_double_nelts = opt_mode_2x.require ();
+  rtx constv = s390_expand_merge_perm_const (mode, high_p);
+  src1 = force_reg (GET_MODE (src1), src1);
+  src2 = force_reg (GET_MODE (src2), src2);
+  rtx x = gen_rtx_VEC_CONCAT (mode_double_nelts, src1, src2);
+  x = gen_rtx_VEC_SELECT (mode, x, constv);
+  emit_insn (gen_rtx_SET (target, x));
 }
 
 /* Emit a vector constant that contains 1s in each element's sign bit position
@@ -7596,7 +7645,7 @@ s390_delegitimize_address (rtx orig_x)
       y = XEXP (x, 0);
       if (GET_CODE (y) == UNSPEC
 	  && (XINT (y, 1) == UNSPEC_GOTENT
-	      || XINT (y, 1) == UNSPEC_PLT))
+	      || XINT (y, 1) == UNSPEC_PLT31))
 	y = XVECEXP (y, 0, 0);
       else
 	return orig_x;
@@ -7759,7 +7808,7 @@ s390_asm_declare_function_size (FILE *asm_out_file,
 /* Write the extra assembler code needed to declare a function properly.  */
 
 void
-s390_asm_output_function_label (FILE *asm_out_file, const char *fname,
+s390_asm_output_function_label (FILE *out_file, const char *fname,
 				tree decl)
 {
   int hw_before, hw_after;
@@ -7773,11 +7822,11 @@ s390_asm_output_function_label (FILE *asm_out_file, const char *fname,
       /* Add a trampoline code area before the function label and initialize it
 	 with two-byte nop instructions.  This area can be overwritten with code
 	 that jumps to a patched version of the function.  */
-      asm_fprintf (asm_out_file, "\tnopr\t%%r0"
+      asm_fprintf (out_file, "\tnopr\t%%r0"
 		   "\t# pre-label NOPs for hotpatch (%d halfwords)\n",
 		   hw_before);
       for (i = 1; i < hw_before; i++)
-	fputs ("\tnopr\t%r0\n", asm_out_file);
+	fputs ("\tnopr\t%r0\n", out_file);
 
       /* Note:  The function label must be aligned so that (a) the bytes of the
 	 following nop do not cross a cacheline boundary, and (b) a jump address
@@ -7794,35 +7843,35 @@ s390_asm_output_function_label (FILE *asm_out_file, const char *fname,
 	function_alignment
 	  = MAX (function_alignment,
 		 (unsigned int) align_functions.levels[0].get_value ());
-      fputs ("\t# alignment for hotpatch\n", asm_out_file);
-      ASM_OUTPUT_ALIGN (asm_out_file, align_functions.levels[0].log);
+      fputs ("\t# alignment for hotpatch\n", out_file);
+      ASM_OUTPUT_ALIGN (out_file, align_functions.levels[0].log);
     }
 
   if (S390_USE_TARGET_ATTRIBUTE && TARGET_DEBUG_ARG)
     {
-      asm_fprintf (asm_out_file, "\t# fn:%s ar%d\n", fname, s390_arch);
-      asm_fprintf (asm_out_file, "\t# fn:%s tu%d\n", fname, s390_tune);
-      asm_fprintf (asm_out_file, "\t# fn:%s sg%d\n", fname, s390_stack_guard);
-      asm_fprintf (asm_out_file, "\t# fn:%s ss%d\n", fname, s390_stack_size);
-      asm_fprintf (asm_out_file, "\t# fn:%s bc%d\n", fname, s390_branch_cost);
-      asm_fprintf (asm_out_file, "\t# fn:%s wf%d\n", fname,
+      asm_fprintf (out_file, "\t# fn:%s ar%d\n", fname, s390_arch);
+      asm_fprintf (out_file, "\t# fn:%s tu%d\n", fname, s390_tune);
+      asm_fprintf (out_file, "\t# fn:%s sg%d\n", fname, s390_stack_guard);
+      asm_fprintf (out_file, "\t# fn:%s ss%d\n", fname, s390_stack_size);
+      asm_fprintf (out_file, "\t# fn:%s bc%d\n", fname, s390_branch_cost);
+      asm_fprintf (out_file, "\t# fn:%s wf%d\n", fname,
 		   s390_warn_framesize);
-      asm_fprintf (asm_out_file, "\t# fn:%s ba%d\n", fname, TARGET_BACKCHAIN);
-      asm_fprintf (asm_out_file, "\t# fn:%s hd%d\n", fname, TARGET_HARD_DFP);
-      asm_fprintf (asm_out_file, "\t# fn:%s hf%d\n", fname, !TARGET_SOFT_FLOAT);
-      asm_fprintf (asm_out_file, "\t# fn:%s ht%d\n", fname, TARGET_OPT_HTM);
-      asm_fprintf (asm_out_file, "\t# fn:%s vx%d\n", fname, TARGET_OPT_VX);
-      asm_fprintf (asm_out_file, "\t# fn:%s ps%d\n", fname,
+      asm_fprintf (out_file, "\t# fn:%s ba%d\n", fname, TARGET_BACKCHAIN);
+      asm_fprintf (out_file, "\t# fn:%s hd%d\n", fname, TARGET_HARD_DFP);
+      asm_fprintf (out_file, "\t# fn:%s hf%d\n", fname, !TARGET_SOFT_FLOAT);
+      asm_fprintf (out_file, "\t# fn:%s ht%d\n", fname, TARGET_OPT_HTM);
+      asm_fprintf (out_file, "\t# fn:%s vx%d\n", fname, TARGET_OPT_VX);
+      asm_fprintf (out_file, "\t# fn:%s ps%d\n", fname,
 		   TARGET_PACKED_STACK);
-      asm_fprintf (asm_out_file, "\t# fn:%s se%d\n", fname, TARGET_SMALL_EXEC);
-      asm_fprintf (asm_out_file, "\t# fn:%s mv%d\n", fname, TARGET_MVCLE);
-      asm_fprintf (asm_out_file, "\t# fn:%s zv%d\n", fname, TARGET_ZVECTOR);
-      asm_fprintf (asm_out_file, "\t# fn:%s wd%d\n", fname,
+      asm_fprintf (out_file, "\t# fn:%s se%d\n", fname, TARGET_SMALL_EXEC);
+      asm_fprintf (out_file, "\t# fn:%s mv%d\n", fname, TARGET_MVCLE);
+      asm_fprintf (out_file, "\t# fn:%s zv%d\n", fname, TARGET_ZVECTOR);
+      asm_fprintf (out_file, "\t# fn:%s wd%d\n", fname,
 		   s390_warn_dynamicstack_p);
     }
-  ASM_OUTPUT_LABEL (asm_out_file, fname);
+  ASM_OUTPUT_LABEL (out_file, fname);
   if (hw_after > 0)
-    asm_fprintf (asm_out_file,
+    asm_fprintf (out_file,
 		 "\t# post-label NOPs for hotpatch (%d halfwords)\n",
 		 hw_after);
 }
@@ -7849,7 +7898,7 @@ s390_output_addr_const_extra (FILE *file, rtx x)
 	output_addr_const (file, XVECEXP (x, 0, 0));
 	fprintf (file, "@GOTOFF");
 	return true;
-      case UNSPEC_PLT:
+      case UNSPEC_PLT31:
 	output_addr_const (file, XVECEXP (x, 0, 0));
 	fprintf (file, "@PLT");
 	return true;
@@ -7943,6 +7992,7 @@ print_operand_address (FILE *file, rtx addr)
     'E': print opcode suffix for branch on index instruction.
     'G': print the size of the operand in bytes.
     'J': print tls_load/tls_gdcall/tls_ldcall suffix
+    'K': print @PLT suffix for call targets and load address values.
     'M': print the second word of a TImode operand.
     'N': print the second word of a DImode operand.
     'O': print only the displacement of a memory reference or address.
@@ -8128,6 +8178,29 @@ print_operand (FILE *file, rtx x, int code)
 
     case 'Y':
       print_shift_count_operand (file, x);
+      return;
+
+    case 'K':
+      /* Append @PLT to both local and non-local symbols in order to support
+	 Linux Kernel livepatching: patches contain individual functions and
+	 are loaded further than 2G away from vmlinux, and therefore they must
+	 call even static functions via PLT.  ld will optimize @PLT away for
+	 normal code, and keep it for patches.
+
+	 Do not indiscriminately add @PLT in 31-bit mode due to the %r12
+	 restriction, use UNSPEC_PLT31 instead.
+
+	 @PLT only makes sense for functions, data is taken care of by
+	 -mno-pic-data-is-text-relative.
+
+	 Adding @PLT interferes with handling of weak symbols in non-PIC code,
+	 since their addresses are loaded with larl, which then always produces
+	 a non-NULL result, so skip them here as well.  */
+      if (TARGET_64BIT
+	  && GET_CODE (x) == SYMBOL_REF
+	  && SYMBOL_REF_FUNCTION_P (x)
+	  && !(SYMBOL_REF_WEAK (x) && !flag_pic))
+	fprintf (file, "@PLT");
       return;
     }
 
@@ -13110,33 +13183,26 @@ output_asm_nops (const char *user, int hw)
     }
 }
 
-/* Output assembler code to FILE to increment profiler label # LABELNO
-   for profiling a function entry.  */
+/* Output assembler code to FILE to call a profiler hook.  */
 
 void
-s390_function_profiler (FILE *file, int labelno)
+s390_function_profiler (FILE *file, int labelno ATTRIBUTE_UNUSED)
 {
-  rtx op[8];
-
-  char label[128];
-  ASM_GENERATE_INTERNAL_LABEL (label, "LP", labelno);
+  rtx op[4];
 
   fprintf (file, "# function profiler \n");
 
   op[0] = gen_rtx_REG (Pmode, RETURN_REGNUM);
   op[1] = gen_rtx_REG (Pmode, STACK_POINTER_REGNUM);
   op[1] = gen_rtx_MEM (Pmode, plus_constant (Pmode, op[1], UNITS_PER_LONG));
-  op[7] = GEN_INT (UNITS_PER_LONG);
+  op[3] = GEN_INT (UNITS_PER_LONG);
 
-  op[2] = gen_rtx_REG (Pmode, 1);
-  op[3] = gen_rtx_SYMBOL_REF (Pmode, label);
-  SYMBOL_REF_FLAGS (op[3]) = SYMBOL_FLAG_LOCAL;
-
-  op[4] = gen_rtx_SYMBOL_REF (Pmode, flag_fentry ? "__fentry__" : "_mcount");
-  if (flag_pic)
+  op[2] = gen_rtx_SYMBOL_REF (Pmode, flag_fentry ? "__fentry__" : "_mcount");
+  SYMBOL_REF_FLAGS (op[2]) |= SYMBOL_FLAG_FUNCTION;
+  if (flag_pic && !TARGET_64BIT)
     {
-      op[4] = gen_rtx_UNSPEC (Pmode, gen_rtvec (1, op[4]), UNSPEC_PLT);
-      op[4] = gen_rtx_CONST (Pmode, op[4]);
+      op[2] = gen_rtx_UNSPEC (Pmode, gen_rtvec (1, op[2]), UNSPEC_PLT31);
+      op[2] = gen_rtx_CONST (Pmode, op[2]);
     }
 
   if (flag_record_mcount)
@@ -13150,20 +13216,19 @@ s390_function_profiler (FILE *file, int labelno)
 	warning (OPT_Wcannot_profile, "nested functions cannot be profiled "
 		 "with %<-mfentry%> on s390");
       else
-	output_asm_insn ("brasl\t0,%4", op);
+	output_asm_insn ("brasl\t0,%2%K2", op);
     }
   else if (TARGET_64BIT)
     {
       if (flag_nop_mcount)
-	output_asm_nops ("-mnop-mcount", /* stg */ 3 + /* larl */ 3 +
-			 /* brasl */ 3 + /* lg */ 3);
+	output_asm_nops ("-mnop-mcount", /* stg */ 3 + /* brasl */ 3 +
+			 /* lg */ 3);
       else
 	{
 	  output_asm_insn ("stg\t%0,%1", op);
 	  if (flag_dwarf2_cfi_asm)
-	    output_asm_insn (".cfi_rel_offset\t%0,%7", op);
-	  output_asm_insn ("larl\t%2,%3", op);
-	  output_asm_insn ("brasl\t%0,%4", op);
+	    output_asm_insn (".cfi_rel_offset\t%0,%3", op);
+	  output_asm_insn ("brasl\t%0,%2%K2", op);
 	  output_asm_insn ("lg\t%0,%1", op);
 	  if (flag_dwarf2_cfi_asm)
 	    output_asm_insn (".cfi_restore\t%0", op);
@@ -13172,15 +13237,14 @@ s390_function_profiler (FILE *file, int labelno)
   else
     {
       if (flag_nop_mcount)
-	output_asm_nops ("-mnop-mcount", /* st */ 2 + /* larl */ 3 +
-			 /* brasl */ 3 + /* l */ 2);
+	output_asm_nops ("-mnop-mcount", /* st */ 2 + /* brasl */ 3 +
+			 /* l */ 2);
       else
 	{
 	  output_asm_insn ("st\t%0,%1", op);
 	  if (flag_dwarf2_cfi_asm)
-	    output_asm_insn (".cfi_rel_offset\t%0,%7", op);
-	  output_asm_insn ("larl\t%2,%3", op);
-	  output_asm_insn ("brasl\t%0,%4", op);
+	    output_asm_insn (".cfi_rel_offset\t%0,%3", op);
+	  output_asm_insn ("brasl\t%0,%2%K2", op);
 	  output_asm_insn ("l\t%0,%1", op);
 	  if (flag_dwarf2_cfi_asm)
 	    output_asm_insn (".cfi_restore\t%0", op);
@@ -13256,9 +13320,11 @@ s390_output_mi_thunk (FILE *file, tree thunk ATTRIBUTE_UNUSED,
   if (flag_pic && !SYMBOL_REF_LOCAL_P (op[0]))
     {
       nonlocal = 1;
-      op[0] = gen_rtx_UNSPEC (Pmode, gen_rtvec (1, op[0]),
-			      TARGET_64BIT ? UNSPEC_PLT : UNSPEC_GOT);
-      op[0] = gen_rtx_CONST (Pmode, op[0]);
+      if (!TARGET_64BIT)
+	{
+	  op[0] = gen_rtx_UNSPEC (Pmode, gen_rtvec (1, op[0]), UNSPEC_GOT);
+	  op[0] = gen_rtx_CONST (Pmode, op[0]);
+	}
     }
 
   /* Operand 1 is the 'this' pointer.  */
@@ -13348,7 +13414,7 @@ s390_output_mi_thunk (FILE *file, tree thunk ATTRIBUTE_UNUSED,
 	}
 
       /* Jump to target.  */
-      output_asm_insn ("jg\t%0", op);
+      output_asm_insn ("jg\t%0%K0", op);
 
       /* Output literal pool if required.  */
       if (op[5])
@@ -13739,7 +13805,7 @@ rtx_insn *
 s390_emit_call (rtx addr_location, rtx tls_call, rtx result_reg,
 		rtx retaddr_reg)
 {
-  bool plt_call = false;
+  bool plt31_call_p = false;
   rtx_insn *insn;
   rtx vec[4] = { NULL_RTX };
   int elts = 0;
@@ -13754,15 +13820,15 @@ s390_emit_call (rtx addr_location, rtx tls_call, rtx result_reg,
     {
       /* When calling a global routine in PIC mode, we must
 	 replace the symbol itself with the PLT stub.  */
-      if (flag_pic && !SYMBOL_REF_LOCAL_P (addr_location))
+      if (flag_pic && !SYMBOL_REF_LOCAL_P (addr_location) && !TARGET_64BIT)
 	{
-	  if (TARGET_64BIT || retaddr_reg != NULL_RTX)
+	  if (retaddr_reg != NULL_RTX)
 	    {
 	      addr_location = gen_rtx_UNSPEC (Pmode,
 					      gen_rtvec (1, addr_location),
-					      UNSPEC_PLT);
+					      UNSPEC_PLT31);
 	      addr_location = gen_rtx_CONST (Pmode, addr_location);
-	      plt_call = true;
+	      plt31_call_p = true;
 	    }
 	  else
 	    /* For -fpic code the PLT entries might use r12 which is
@@ -13783,7 +13849,7 @@ s390_emit_call (rtx addr_location, rtx tls_call, rtx result_reg,
      register 1.  */
   if (retaddr_reg == NULL_RTX
       && GET_CODE (addr_location) != SYMBOL_REF
-      && !plt_call)
+      && !plt31_call_p)
     {
       emit_move_insn (gen_rtx_REG (Pmode, SIBCALL_REGNUM), addr_location);
       addr_location = gen_rtx_REG (Pmode, SIBCALL_REGNUM);
@@ -13791,7 +13857,7 @@ s390_emit_call (rtx addr_location, rtx tls_call, rtx result_reg,
 
   if (TARGET_INDIRECT_BRANCH_NOBP_CALL
       && GET_CODE (addr_location) != SYMBOL_REF
-      && !plt_call)
+      && !plt31_call_p)
     {
       /* Indirect branch thunks require the target to be a single GPR.  */
       addr_location = force_reg (Pmode, addr_location);
@@ -13843,7 +13909,7 @@ s390_emit_call (rtx addr_location, rtx tls_call, rtx result_reg,
   insn = emit_call_insn (*call);
 
   /* 31-bit PLT stubs and tls calls use the GOT register implicitly.  */
-  if ((!TARGET_64BIT && plt_call) || tls_call != NULL_RTX)
+  if (plt31_call_p || tls_call != NULL_RTX)
     {
       /* s390_function_ok_for_sibcall should
 	 have denied sibcalls in this case.  */
@@ -13899,7 +13965,10 @@ s390_emit_tpf_eh_return (rtx target)
   rtx reg, orig_ra;
 
   if (!s390_tpf_eh_return_symbol)
-    s390_tpf_eh_return_symbol = gen_rtx_SYMBOL_REF (Pmode, "__tpf_eh_return");
+    {
+      s390_tpf_eh_return_symbol = gen_rtx_SYMBOL_REF (Pmode, "__tpf_eh_return");
+      SYMBOL_REF_FLAGS (s390_tpf_eh_return_symbol) |= SYMBOL_FLAG_FUNCTION;
+    }
 
   reg = gen_rtx_REG (Pmode, 2);
   orig_ra = gen_rtx_REG (Pmode, 3);
@@ -14456,15 +14525,13 @@ s390_adjust_loop_scan_osc (struct loop* loop)
 static void
 s390_adjust_loops ()
 {
-  struct loop *loop = NULL;
-
   df_analyze ();
   compute_bb_for_insn ();
 
   /* Find the loops.  */
   loop_optimizer_init (AVOID_CFG_MODIFICATIONS);
 
-  FOR_EACH_LOOP (loop, LI_ONLY_INNERMOST)
+  for (auto loop : loops_list (cfun, LI_ONLY_INNERMOST))
     {
       if (dump_file)
 	{
@@ -15333,7 +15400,10 @@ s390_loop_unroll_adjust (unsigned nunroll, struct loop *loop)
 		  || (GET_CODE (SET_SRC (set)) == COMPARE
 		      && GET_MODE (XEXP (SET_SRC (set), 0)) == BLKmode
 		      && GET_MODE (XEXP (SET_SRC (set), 1)) == BLKmode)))
-	    return 1;
+	    {
+	      free (bbs);
+	      return 1;
+	    }
 
 	  FOR_EACH_SUBRTX (iter, array, PATTERN (insn), NONCONST)
 	    if (MEM_P (*iter))
@@ -15679,9 +15749,9 @@ s390_option_override (void)
     {
       /* Don't emit DWARF3/4 unless specifically selected.  The TPF
 	 debuggers do not yet support DWARF 3/4.  */
-      if (!global_options_set.x_dwarf_strict)
+      if (!OPTION_SET_P (dwarf_strict))
 	dwarf_strict = 1;
-      if (!global_options_set.x_dwarf_version)
+      if (!OPTION_SET_P (dwarf_version))
 	dwarf_version = 2;
     }
 }
@@ -16492,12 +16562,84 @@ s390_excess_precision (enum excess_precision_type type)
 	   ensure consistency with the implementation in glibc, report that
 	   float is evaluated to the range and precision of double.  */
 	return FLT_EVAL_METHOD_PROMOTE_TO_DOUBLE;
+      case EXCESS_PRECISION_TYPE_FLOAT16:
+	error ("%<-fexcess-precision=16%> is not supported on this target");
+	break;
       default:
 	gcc_unreachable ();
     }
   return FLT_EVAL_METHOD_UNPREDICTABLE;
 }
 #endif
+
+void
+s390_rawmemchr (machine_mode elt_mode, rtx dst, rtx src, rtx pat)
+{
+  machine_mode vec_mode = mode_for_vector (as_a <scalar_int_mode> (elt_mode),
+					   16 / GET_MODE_SIZE (elt_mode)).require();
+  rtx lens = gen_reg_rtx (V16QImode);
+  rtx pattern = gen_reg_rtx (vec_mode);
+  rtx loop_start = gen_label_rtx ();
+  rtx loop_end = gen_label_rtx ();
+  rtx addr = gen_reg_rtx (Pmode);
+  rtx offset = gen_reg_rtx (Pmode);
+  rtx loadlen = gen_reg_rtx (SImode);
+  rtx matchlen = gen_reg_rtx (SImode);
+  rtx mem;
+
+  pat = GEN_INT (trunc_int_for_mode (INTVAL (pat), elt_mode));
+  emit_insn (gen_rtx_SET (pattern, gen_rtx_VEC_DUPLICATE (vec_mode, pat)));
+
+  emit_move_insn (addr, XEXP (src, 0));
+
+  // alignment
+  emit_insn (gen_vlbb (lens, gen_rtx_MEM (BLKmode, addr), GEN_INT (6)));
+  emit_insn (gen_lcbb (loadlen, addr, GEN_INT (6)));
+  lens = convert_to_mode (vec_mode, lens, 1);
+  emit_insn (gen_vec_vfees (vec_mode, lens, lens, pattern, GEN_INT (0)));
+  lens = convert_to_mode (V4SImode, lens, 1);
+  emit_insn (gen_vec_extractv4sisi (matchlen, lens, GEN_INT (1)));
+  lens = convert_to_mode (vec_mode, lens, 1);
+  emit_cmp_and_jump_insns (matchlen, loadlen, LT, NULL_RTX, SImode, 1, loop_end);
+  force_expand_binop (Pmode, add_optab, addr, GEN_INT(16), addr, 1, OPTAB_DIRECT);
+  force_expand_binop (Pmode, and_optab, addr, GEN_INT(~HOST_WIDE_INT_UC(0xf)), addr, 1, OPTAB_DIRECT);
+  // now, addr is 16-byte aligned
+
+  mem = gen_rtx_MEM (vec_mode, addr);
+  set_mem_align (mem, 128);
+  emit_move_insn (lens, mem);
+  emit_insn (gen_vec_vfees (vec_mode, lens, lens, pattern, GEN_INT (VSTRING_FLAG_CS)));
+  add_int_reg_note (s390_emit_ccraw_jump (4, EQ, loop_end),
+		    REG_BR_PROB,
+		    profile_probability::very_unlikely ().to_reg_br_prob_note ());
+
+  emit_label (loop_start);
+  LABEL_NUSES (loop_start) = 1;
+
+  force_expand_binop (Pmode, add_optab, addr, GEN_INT (16), addr, 1, OPTAB_DIRECT);
+  mem = gen_rtx_MEM (vec_mode, addr);
+  set_mem_align (mem, 128);
+  emit_move_insn (lens, mem);
+  emit_insn (gen_vec_vfees (vec_mode, lens, lens, pattern, GEN_INT (VSTRING_FLAG_CS)));
+  add_int_reg_note (s390_emit_ccraw_jump (4, NE, loop_start),
+		    REG_BR_PROB,
+		    profile_probability::very_likely ().to_reg_br_prob_note ());
+
+  emit_label (loop_end);
+  LABEL_NUSES (loop_end) = 1;
+
+  if (TARGET_64BIT)
+    {
+      lens = convert_to_mode (V2DImode, lens, 1);
+      emit_insn (gen_vec_extractv2didi (offset, lens, GEN_INT (0)));
+    }
+  else
+    {
+      lens = convert_to_mode (V4SImode, lens, 1);
+      emit_insn (gen_vec_extractv4sisi (offset, lens, GEN_INT (1)));
+    }
+  force_expand_binop (Pmode, add_optab, addr, offset, dst, 1, OPTAB_DIRECT);
+}
 
 /* Implement the TARGET_ASAN_SHADOW_OFFSET hook.  */
 
@@ -16781,7 +16923,7 @@ static rtx_insn *
 s390_md_asm_adjust (vec<rtx> &outputs, vec<rtx> &inputs,
 		    vec<machine_mode> &input_modes,
 		    vec<const char *> &constraints, vec<rtx> & /*clobbers*/,
-		    HARD_REG_SET & /*clobbered_regs*/)
+		    HARD_REG_SET & /*clobbered_regs*/, location_t /*loc*/)
 {
   if (!TARGET_VXE)
     /* Long doubles are stored in FPR pairs - nothing to do.  */
@@ -16867,6 +17009,154 @@ s390_md_asm_adjust (vec<rtx> &outputs, vec<rtx> &inputs,
     }
 
   return after_md_seq;
+}
+
+#define MAX_VECT_LEN	16
+
+struct expand_vec_perm_d
+{
+  rtx target, op0, op1;
+  unsigned char perm[MAX_VECT_LEN];
+  machine_mode vmode;
+  unsigned char nelt;
+  bool testing_p;
+};
+
+/* Try to expand the vector permute operation described by D using the
+   vector merge instructions vml and vmh.  Return true if vector merge
+   could be used.  */
+static bool
+expand_perm_with_merge (const struct expand_vec_perm_d &d)
+{
+  bool merge_lo_p = true;
+  bool merge_hi_p = true;
+
+  if (d.nelt % 2)
+    return false;
+
+  // For V4SI this checks for: { 0, 4, 1, 5 }
+  for (int telt = 0; telt < d.nelt; telt++)
+    if (d.perm[telt] != telt / 2 + (telt % 2) * d.nelt)
+      {
+	merge_hi_p = false;
+	break;
+      }
+
+  if (!merge_hi_p)
+    {
+      // For V4SI this checks for: { 2, 6, 3, 7 }
+      for (int telt = 0; telt < d.nelt; telt++)
+	if (d.perm[telt] != (telt + d.nelt) / 2 + (telt % 2) * d.nelt)
+	  {
+	    merge_lo_p = false;
+	    break;
+	  }
+    }
+  else
+    merge_lo_p = false;
+
+  if (d.testing_p)
+    return merge_lo_p || merge_hi_p;
+
+  if (merge_lo_p || merge_hi_p)
+    s390_expand_merge (d.target, d.op0, d.op1, merge_hi_p);
+
+  return merge_lo_p || merge_hi_p;
+}
+
+/* Try to expand the vector permute operation described by D using the
+   vector permute doubleword immediate instruction vpdi.  Return true
+   if vpdi could be used.
+
+   VPDI allows 4 different immediate values (0, 1, 4, 5). The 0 and 5
+   cases are covered by vmrhg and vmrlg already.  So we only care
+   about the 1, 4 cases here.
+   1 - First element of src1 and second of src2
+   4 - Second element of src1 and first of src2  */
+static bool
+expand_perm_with_vpdi (const struct expand_vec_perm_d &d)
+{
+  bool vpdi1_p = false;
+  bool vpdi4_p = false;
+  rtx op0_reg, op1_reg;
+
+  // Only V2DI and V2DF are supported here.
+  if (d.nelt != 2)
+    return false;
+
+  if (d.perm[0] == 0 && d.perm[1] == 3)
+    vpdi1_p = true;
+
+  if (d.perm[0] == 1 && d.perm[1] == 2)
+    vpdi4_p = true;
+
+  if (!vpdi1_p && !vpdi4_p)
+    return false;
+
+  if (d.testing_p)
+    return true;
+
+  op0_reg = force_reg (GET_MODE (d.op0), d.op0);
+  op1_reg = force_reg (GET_MODE (d.op1), d.op1);
+
+  if (vpdi1_p)
+    emit_insn (gen_vpdi1 (d.vmode, d.target, op0_reg, op1_reg));
+
+  if (vpdi4_p)
+    emit_insn (gen_vpdi4 (d.vmode, d.target, op0_reg, op1_reg));
+
+  return true;
+}
+
+/* Try to find the best sequence for the vector permute operation
+   described by D.  Return true if the operation could be
+   expanded.  */
+static bool
+vectorize_vec_perm_const_1 (const struct expand_vec_perm_d &d)
+{
+  if (expand_perm_with_merge (d))
+    return true;
+
+  if (expand_perm_with_vpdi (d))
+    return true;
+
+  return false;
+}
+
+/* Return true if we can emit instructions for the constant
+   permutation vector in SEL.  If OUTPUT, IN0, IN1 are non-null the
+   hook is supposed to emit the required INSNs.  */
+
+bool
+s390_vectorize_vec_perm_const (machine_mode vmode, rtx target, rtx op0, rtx op1,
+			       const vec_perm_indices &sel)
+{
+  struct expand_vec_perm_d d;
+  unsigned int i, nelt;
+
+  if (!s390_vector_mode_supported_p (vmode) || GET_MODE_SIZE (vmode) != 16)
+    return false;
+
+  d.target = target;
+  d.op0 = op0;
+  d.op1 = op1;
+
+  d.vmode = vmode;
+  gcc_assert (VECTOR_MODE_P (d.vmode));
+  d.nelt = nelt = GET_MODE_NUNITS (d.vmode);
+  d.testing_p = target == NULL_RTX;
+
+  gcc_assert (target == NULL_RTX || REG_P (target));
+  gcc_assert (sel.length () == nelt);
+
+  for (i = 0; i < nelt; i++)
+    {
+      unsigned char e = sel[i];
+      gcc_assert (e < 2 * nelt);
+      d.perm[i] = e;
+    }
+
+  return vectorize_vec_perm_const_1 (d);
 }
 
 /* Initialize GCC target structure.  */
@@ -17178,6 +17468,10 @@ s390_md_asm_adjust (vec<rtx> &outputs, vec<rtx> &inputs,
 
 #undef TARGET_MD_ASM_ADJUST
 #define TARGET_MD_ASM_ADJUST s390_md_asm_adjust
+
+#undef TARGET_VECTORIZE_VEC_PERM_CONST
+#define TARGET_VECTORIZE_VEC_PERM_CONST s390_vectorize_vec_perm_const
+
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 

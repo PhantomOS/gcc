@@ -132,9 +132,12 @@
 ; TARGET_32BIT, "t1" or "t2" to specify a specific Thumb mode.  "v6"
 ; for ARM or Thumb-2 with arm_arch6, and nov6 for ARM without
 ; arm_arch6.  "v6t2" for Thumb-2 with arm_arch6 and "v8mb" for ARMv8-M
-; Baseline.  This attribute is used to compute attribute "enabled",
+; Baseline.  "fix_vlldm" is for fixing the v8-m/v8.1-m VLLDM erratum.
+; This attribute is used to compute attribute "enabled",
 ; use type "any" to enable an alternative in all cases.
-(define_attr "arch" "any,a,t,32,t1,t2,v6,nov6,v6t2,v8mb,iwmmxt,iwmmxt2,armv6_or_vfpv3,neon,mve"
+(define_attr "arch" "any, a, t, 32, t1, t2, v6,nov6, v6t2, \
+		     v8mb, fix_vlldm, iwmmxt, iwmmxt2, armv6_or_vfpv3, \
+		     neon, mve"
   (const_string "any"))
 
 (define_attr "arch_enabled" "no,yes"
@@ -175,6 +178,10 @@
 
 	 (and (eq_attr "arch" "v8mb")
 	      (match_test "TARGET_THUMB1 && arm_arch8"))
+	 (const_string "yes")
+
+	 (and (eq_attr "arch" "fix_vlldm")
+	      (match_test "fix_vlldm"))
 	 (const_string "yes")
 
 	 (and (eq_attr "arch" "iwmmxt2")
@@ -12609,6 +12616,22 @@
      DONE;
   }"
 )
+
+;; movmisalign for DImode
+(define_expand "movmisaligndi"
+  [(match_operand:DI 0 "general_operand")
+   (match_operand:DI 1 "general_operand")]
+  "unaligned_access"
+{
+  rtx lo_op0 = gen_lowpart (SImode, operands[0]);
+  rtx lo_op1 = gen_lowpart (SImode, operands[1]);
+  rtx hi_op0 = gen_highpart_mode (SImode, DImode, operands[0]);
+  rtx hi_op1 = gen_highpart_mode (SImode, DImode, operands[1]);
+
+  emit_insn (gen_movmisalignsi (lo_op0, lo_op1));
+  emit_insn (gen_movmisalignsi (hi_op0, hi_op1));
+  DONE;
+})
 
 ;; movmisalign patterns for HImode and SImode.
 (define_expand "movmisalign<mode>"

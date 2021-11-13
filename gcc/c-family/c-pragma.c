@@ -39,6 +39,10 @@ along with GCC; see the file COPYING3.  If not see
   do { warning (OPT_Wpragmas, gmsgid); return; } while (0)
 #define GCC_BAD2(gmsgid, arg) \
   do { warning (OPT_Wpragmas, gmsgid, arg); return; } while (0)
+#define GCC_BAD_AT(loc, gmsgid)					\
+  do { warning_at (loc, OPT_Wpragmas, gmsgid); return; } while (0)
+#define GCC_BAD2_AT(loc, gmsgid, arg)			\
+  do { warning_at (loc, OPT_Wpragmas, gmsgid, arg); return; } while (0)
 
 struct GTY(()) align_stack {
   int		       alignment;
@@ -130,6 +134,7 @@ pop_alignment (tree id)
 static void
 handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
 {
+  location_t loc;
   tree x, id = 0;
   int align = -1;
   enum cpp_ttype token;
@@ -138,7 +143,7 @@ handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
   if (pragma_lex (&x) != CPP_OPEN_PAREN)
     GCC_BAD ("missing %<(%> after %<#pragma pack%> - ignored");
 
-  token = pragma_lex (&x);
+  token = pragma_lex (&x, &loc);
   if (token == CPP_CLOSE_PAREN)
     {
       action = set;
@@ -147,7 +152,7 @@ handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
   else if (token == CPP_NUMBER)
     {
       if (TREE_CODE (x) != INTEGER_CST)
-	GCC_BAD ("invalid constant in %<#pragma pack%> - ignored");
+	GCC_BAD_AT (loc, "invalid constant in %<#pragma pack%> - ignored");
       align = TREE_INT_CST_LOW (x);
       action = set;
       if (pragma_lex (&x) != CPP_CLOSE_PAREN)
@@ -167,11 +172,12 @@ handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
       else if (!strcmp (op, "pop"))
 	action = pop;
       else
-	GCC_BAD2 ("unknown action %qE for %<#pragma pack%> - ignored", x);
+	GCC_BAD2_AT (loc, "unknown action %qE for %<#pragma pack%> - ignored",
+		     x);
 
       while ((token = pragma_lex (&x)) == CPP_COMMA)
 	{
-	  token = pragma_lex (&x);
+	  token = pragma_lex (&x, &loc);
 	  if (token == CPP_NAME && id == 0)
 	    {
 	      id = x;
@@ -179,7 +185,8 @@ handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
 	  else if (token == CPP_NUMBER && action == push && align == -1)
 	    {
 	      if (TREE_CODE (x) != INTEGER_CST)
-		GCC_BAD ("invalid constant in %<#pragma pack%> - ignored");
+		GCC_BAD_AT (loc,
+			    "invalid constant in %<#pragma pack%> - ignored");
 	      align = TREE_INT_CST_LOW (x);
 	      if (align == -1)
 		action = set;
@@ -195,8 +202,8 @@ handle_pragma_pack (cpp_reader * ARG_UNUSED (dummy))
   else
     GCC_BAD ("malformed %<#pragma pack%> - ignored");
 
-  if (pragma_lex (&x) != CPP_EOF)
-    warning (OPT_Wpragmas, "junk at end of %<#pragma pack%>");
+  if (pragma_lex (&x, &loc) != CPP_EOF)
+    warning_at (loc, OPT_Wpragmas, "junk at end of %<#pragma pack%>");
 
   if (flag_pack_struct)
     GCC_BAD ("%<#pragma pack%> has no effect with %<-fpack-struct%> - ignored");
@@ -764,7 +771,7 @@ handle_pragma_diagnostic(cpp_reader *ARG_UNUSED(dummy))
   if (token != CPP_NAME)
     {
       warning_at (loc, OPT_Wpragmas,
-		  "missing [error|warning|ignored|push|pop]"
+		  "missing [error|warning|ignored|push|pop|ignored_attributes]"
 		  " after %<#pragma GCC diagnostic%>");
       return;
     }
@@ -787,10 +794,43 @@ handle_pragma_diagnostic(cpp_reader *ARG_UNUSED(dummy))
       diagnostic_pop_diagnostics (global_dc, input_location);
       return;
     }
+  else if (strcmp (kind_string, "ignored_attributes") == 0)
+    {
+      token = pragma_lex (&x, &loc);
+      if (token != CPP_STRING)
+	{
+	  warning_at (loc, OPT_Wpragmas,
+		      "missing attribute name after %<#pragma GCC diagnostic "
+		      "ignored_attributes%>");
+	  return;
+	}
+      char *args = xstrdup (TREE_STRING_POINTER (x));
+      const size_t l = strlen (args);
+      if (l == 0)
+	{
+	  warning_at (loc, OPT_Wpragmas, "missing argument to %<#pragma GCC "
+		      "diagnostic ignored_attributes%>");
+	  free (args);
+	  return;
+	}
+      else if (args[l - 1] == ',')
+	{
+	  warning_at (loc, OPT_Wpragmas, "trailing %<,%> in arguments for "
+		      "%<#pragma GCC diagnostic ignored_attributes%>");
+	  free (args);
+	  return;
+	}
+      auto_vec<char *> v;
+      for (char *p = strtok (args, ","); p; p = strtok (NULL, ","))
+	v.safe_push (p);
+      handle_ignored_attributes_option (&v);
+      free (args);
+      return;
+    }
   else
     {
       warning_at (loc, OPT_Wpragmas,
-		  "expected [error|warning|ignored|push|pop]"
+		  "expected [error|warning|ignored|push|pop|ignored_attributes]"
 		  " after %<#pragma GCC diagnostic%>");
       return;
     }
@@ -857,6 +897,7 @@ handle_pragma_diagnostic(cpp_reader *ARG_UNUSED(dummy))
 static void
 handle_pragma_target(cpp_reader *ARG_UNUSED(dummy))
 {
+  location_t loc;
   enum cpp_ttype token;
   tree x;
   bool close_paren_needed_p = false;
@@ -867,16 +908,16 @@ handle_pragma_target(cpp_reader *ARG_UNUSED(dummy))
       return;
     }
 
-  token = pragma_lex (&x);
+  token = pragma_lex (&x, &loc);
   if (token == CPP_OPEN_PAREN)
     {
       close_paren_needed_p = true;
-      token = pragma_lex (&x);
+      token = pragma_lex (&x, &loc);
     }
 
   if (token != CPP_STRING)
     {
-      GCC_BAD ("%<#pragma GCC option%> is not a string");
+      GCC_BAD_AT (loc, "%<#pragma GCC option%> is not a string");
       return;
     }
 
@@ -918,6 +959,12 @@ handle_pragma_target(cpp_reader *ARG_UNUSED(dummy))
 
       if (targetm.target_option.pragma_parse (args, NULL_TREE))
 	current_target_pragma = chainon (current_target_pragma, args);
+
+      /* A target pragma can also influence optimization options. */
+      tree current_optimize
+	= build_optimization_node (&global_options, &global_options_set);
+      if (current_optimize != optimization_current_node)
+	optimization_current_node = current_optimize;
     }
 }
 
@@ -1078,12 +1125,16 @@ handle_pragma_pop_options (cpp_reader *ARG_UNUSED(dummy))
       target_option_current_node = p->target_binary;
     }
 
+  /* Always restore optimization options as optimization_current_node is
+   * overwritten by invoke_set_current_function_hook.  */
+  cl_optimization_restore (&global_options, &global_options_set,
+			   TREE_OPTIMIZATION (p->optimize_binary));
+  cl_target_option_restore (&global_options, &global_options_set,
+			    TREE_TARGET_OPTION (p->target_binary));
+
   if (p->optimize_binary != optimization_current_node)
     {
-      tree old_optimize = optimization_current_node;
-      cl_optimization_restore (&global_options, &global_options_set,
-			       TREE_OPTIMIZATION (p->optimize_binary));
-      c_cpp_builtins_optimize_pragma (parse_in, old_optimize,
+      c_cpp_builtins_optimize_pragma (parse_in, optimization_current_node,
 				      p->optimize_binary);
       optimization_current_node = p->optimize_binary;
     }
@@ -1139,6 +1190,7 @@ handle_pragma_reset_options (cpp_reader *ARG_UNUSED(dummy))
 static void
 handle_pragma_message (cpp_reader *ARG_UNUSED(dummy))
 {
+  location_t loc;
   enum cpp_ttype token;
   tree x, message = 0;
 
@@ -1160,8 +1212,8 @@ handle_pragma_message (cpp_reader *ARG_UNUSED(dummy))
 
   gcc_assert (message);
 
-  if (pragma_lex (&x) != CPP_EOF)
-    warning (OPT_Wpragmas, "junk at end of %<#pragma message%>");
+  if (pragma_lex (&x, &loc) != CPP_EOF)
+    warning_at (loc, OPT_Wpragmas, "junk at end of %<#pragma message%>");
 
   if (TREE_STRING_LENGTH (message) > 1)
     inform (input_location, "%<#pragma message: %s%>",
@@ -1316,9 +1368,12 @@ static const struct omp_pragma_def omp_pragmas[] = {
   { "cancellation", PRAGMA_OMP_CANCELLATION_POINT },
   { "critical", PRAGMA_OMP_CRITICAL },
   { "depobj", PRAGMA_OMP_DEPOBJ },
+  { "error", PRAGMA_OMP_ERROR },
   { "end", PRAGMA_OMP_END_DECLARE_TARGET },
   { "flush", PRAGMA_OMP_FLUSH },
+  { "nothing", PRAGMA_OMP_NOTHING },
   { "requires", PRAGMA_OMP_REQUIRES },
+  { "scope", PRAGMA_OMP_SCOPE },
   { "section", PRAGMA_OMP_SECTION },
   { "sections", PRAGMA_OMP_SECTIONS },
   { "single", PRAGMA_OMP_SINGLE },
@@ -1333,6 +1388,7 @@ static const struct omp_pragma_def omp_pragmas_simd[] = {
   { "distribute", PRAGMA_OMP_DISTRIBUTE },
   { "for", PRAGMA_OMP_FOR },
   { "loop", PRAGMA_OMP_LOOP },
+  { "masked", PRAGMA_OMP_MASKED },
   { "master", PRAGMA_OMP_MASTER },
   { "ordered", PRAGMA_OMP_ORDERED },
   { "parallel", PRAGMA_OMP_PARALLEL },

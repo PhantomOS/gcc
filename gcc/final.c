@@ -1429,7 +1429,7 @@ static bool
 dwarf2_debug_info_emitted_p (tree decl)
 {
   /* When DWARF2 debug info is not generated internally.  */
-  if (!dwarf_debuginfo_p ())
+  if (!dwarf_debuginfo_p () && !dwarf_based_debuginfo_p ())
     return false;
 
   if (DECL_IGNORED_P (decl))
@@ -4106,7 +4106,8 @@ leaf_function_p (void)
   for (insn = get_insns (); insn; insn = NEXT_INSN (insn))
     {
       if (CALL_P (insn)
-	  && ! SIBLING_CALL_P (insn))
+	  && ! SIBLING_CALL_P (insn)
+	  && ! FAKE_CALL_P (insn))
 	return 0;
       if (NONJUMP_INSN_P (insn)
 	  && GET_CODE (PATTERN (insn)) == SEQUENCE

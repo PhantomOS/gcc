@@ -1551,7 +1551,7 @@ cplus_decl_attributes (tree *decl, tree attributes, int flags)
     return;
 
   /* Add implicit "omp declare target" attribute if requested.  */
-  if (scope_chain->omp_declare_target_attribute
+  if (vec_safe_length (scope_chain->omp_declare_target_attribute)
       && ((VAR_P (*decl)
 	   && (TREE_STATIC (*decl) || DECL_EXTERNAL (*decl)))
 	  || TREE_CODE (*decl) == FUNCTION_DECL))
@@ -1584,6 +1584,31 @@ cplus_decl_attributes (tree *decl, tree attributes, int flags)
 
   cp_check_const_attributes (attributes);
 
+  if ((flag_openmp || flag_openmp_simd) && attributes != error_mark_node)
+    {
+      bool diagnosed = false;
+      for (tree *pa = &attributes; *pa; )
+	{
+	  if (get_attribute_namespace (*pa) == omp_identifier)
+	    {
+	      tree name = get_attribute_name (*pa);
+	      if (is_attribute_p ("directive", name)
+		  || is_attribute_p ("sequence", name))
+		{
+		  if (!diagnosed)
+		    {
+		      error ("%<omp::%E%> not allowed to be specified in this "
+			     "context", name);
+		      diagnosed = true;
+		    }
+		  *pa = TREE_CHAIN (*pa);
+		  continue;
+		}
+	    }
+	  pa = &TREE_CHAIN (*pa);
+	}
+    }
+
   if (TREE_CODE (*decl) == TEMPLATE_DECL)
     decl = &DECL_TEMPLATE_RESULT (*decl);
 
@@ -1609,6 +1634,17 @@ cplus_decl_attributes (tree *decl, tree attributes, int flags)
 			: DECL_TEMPLATE_RESULT (tmpl));
 	if (*decl == pattern)
 	  TREE_DEPRECATED (tmpl) = true;
+      }
+
+  /* Likewise, propagate unavailability out to the template.  */
+  if (TREE_UNAVAILABLE (*decl))
+    if (tree ti = get_template_info (*decl))
+      {
+	tree tmpl = TI_TEMPLATE (ti);
+	tree pattern = (TYPE_P (*decl) ? TREE_TYPE (tmpl)
+			: DECL_TEMPLATE_RESULT (tmpl));
+	if (*decl == pattern)
+	  TREE_UNAVAILABLE (tmpl) = true;
       }
 }
 
@@ -1877,18 +1913,14 @@ coerce_delete_type (tree decl, location_t loc)
 static void
 mark_vtable_entries (tree decl, vec<tree> &consteval_vtables)
 {
-  tree fnaddr;
-  unsigned HOST_WIDE_INT idx;
-
   /* It's OK for the vtable to refer to deprecated virtual functions.  */
   warning_sentinel w(warn_deprecated_decl);
 
   bool consteval_seen = false;
 
-  FOR_EACH_CONSTRUCTOR_VALUE (CONSTRUCTOR_ELTS (DECL_INITIAL (decl)),
-			      idx, fnaddr)
+  for (auto &e: CONSTRUCTOR_ELTS (DECL_INITIAL (decl)))
     {
-      tree fn;
+      tree fnaddr = e.value;
 
       STRIP_NOPS (fnaddr);
 
@@ -1898,7 +1930,7 @@ mark_vtable_entries (tree decl, vec<tree> &consteval_vtables)
 	   virtual call offset, an RTTI offset, etc.  */
 	continue;
 
-      fn = TREE_OPERAND (fnaddr, 0);
+      tree fn = TREE_OPERAND (fnaddr, 0);
       if (TREE_CODE (fn) == FUNCTION_DECL && DECL_IMMEDIATE_FUNCTION_P (fn))
 	{
 	  if (!consteval_seen)
@@ -2941,14 +2973,15 @@ reset_type_linkage (tree type)
 	  SET_DECL_ASSEMBLER_NAME (vt, name);
 	  reset_decl_linkage (vt);
 	}
-      if (tree ti = CLASSTYPE_TYPEINFO_VAR (type))
-	{
-	  tree name = mangle_typeinfo_for_type (type);
-	  DECL_NAME (ti) = name;
-	  SET_DECL_ASSEMBLER_NAME (ti, name);
-	  TREE_TYPE (name) = type;
-	  reset_decl_linkage (ti);
-	}
+      if (!ANON_AGGR_TYPE_P (type))
+	if (tree ti = CLASSTYPE_TYPEINFO_VAR (type))
+	  {
+	    tree name = mangle_typeinfo_for_type (type);
+	    DECL_NAME (ti) = name;
+	    SET_DECL_ASSEMBLER_NAME (ti, name);
+	    TREE_TYPE (name) = type;
+	    reset_decl_linkage (ti);
+	  }
       for (tree m = TYPE_FIELDS (type); m; m = DECL_CHAIN (m))
 	{
 	  tree mem = STRIP_TEMPLATE (m);
@@ -3422,6 +3455,12 @@ set_guard (tree guard)
 static bool
 var_defined_without_dynamic_init (tree var)
 {
+  /* constinit vars are guaranteed to not have dynamic initializer,
+     but still registering the destructor counts as dynamic initialization.  */
+  if (DECL_DECLARED_CONSTINIT_P (var)
+      && COMPLETE_TYPE_P (TREE_TYPE (var))
+      && !TYPE_HAS_NONTRIVIAL_DESTRUCTOR (TREE_TYPE (var)))
+    return true;
   /* If it's defined in another TU, we can't tell.  */
   if (DECL_EXTERNAL (var))
     return false;
@@ -4529,7 +4568,7 @@ no_linkage_error (tree decl)
 	  || (errorcount + sorrycount > 0
 	      && DECL_LANG_SPECIFIC (decl)
 	      && DECL_TEMPLATE_INFO (decl)
-	      && TREE_NO_WARNING (decl))))
+	      && warning_suppressed_p (decl /* What warning? */))))
     /* In C++11 it's ok if the decl is defined.  */
     return;
 
@@ -5204,7 +5243,7 @@ c_parse_final_cleanups (void)
 	  && warning_at (DECL_SOURCE_LOCATION (decl), 0,
 			 "inline function %qD used but never defined", decl))
 	/* Avoid a duplicate warning from check_global_declaration.  */
-	TREE_NO_WARNING (decl) = 1;
+	suppress_warning (decl, OPT_Wunused);
     }
 
   /* So must decls that use a type with no linkage.  */
@@ -5467,14 +5506,47 @@ maybe_instantiate_decl (tree decl)
     }
 }
 
-/* Maybe warn if DECL is deprecated, subject to COMPLAIN.  Returns whether or
-   not a warning was emitted.  */
+/* Error if the DECL is unavailable (unless this is currently suppressed).
+   Maybe warn if DECL is deprecated, subject to COMPLAIN.  Returns true if
+   an error or warning was emitted.  */
 
 bool
-cp_warn_deprecated_use (tree decl, tsubst_flags_t complain)
+cp_handle_deprecated_or_unavailable (tree decl, tsubst_flags_t complain)
 {
-  if (!(complain & tf_warning) || !decl
-      || deprecated_state == DEPRECATED_SUPPRESS)
+  if (!decl)
+    return false;
+
+  if ((complain & tf_error)
+      && deprecated_state != UNAVAILABLE_DEPRECATED_SUPPRESS)
+    {
+      if (TREE_UNAVAILABLE (decl))
+	{
+	  error_unavailable_use (decl, NULL_TREE);
+	  return true;
+	}
+      else
+	{
+	  /* Perhaps this is an unavailable typedef.  */
+	  if (TYPE_P (decl)
+	      && TYPE_NAME (decl)
+	      && TREE_UNAVAILABLE (TYPE_NAME (decl)))
+	    {
+	      decl = TYPE_NAME (decl);
+	      /* Don't error within members of a unavailable type.  */
+	      if (TYPE_P (decl)
+		  && currently_open_class (decl))
+		return false;
+
+	      error_unavailable_use (decl, NULL_TREE);
+	      return true;
+	    }
+	}
+      /* Carry on to consider deprecatedness.  */
+    }
+
+  if (!(complain & tf_warning)
+      || deprecated_state == DEPRECATED_SUPPRESS
+      || deprecated_state == UNAVAILABLE_DEPRECATED_SUPPRESS)
     return false;
 
   if (!TREE_DEPRECATED (decl))
@@ -5499,10 +5571,10 @@ cp_warn_deprecated_use (tree decl, tsubst_flags_t complain)
       && DECL_NONSTATIC_MEMBER_FUNCTION_P (decl)
       && copy_fn_p (decl))
     {
-      if (warn_deprecated_copy
-	  /* Don't warn about system library classes (c++/86342).  */
-	  && (!DECL_IN_SYSTEM_HEADER (decl)
-	      || global_dc->dc_warn_system_headers))
+      /* Don't warn if the flag was disabled around the class definition
+	 (c++/94492).  */
+      if (warning_enabled_at (DECL_SOURCE_LOCATION (decl),
+			      OPT_Wdeprecated_copy))
 	{
 	  auto_diagnostic_group d;
 	  tree ctx = DECL_CONTEXT (decl);
@@ -5534,7 +5606,7 @@ cp_warn_deprecated_use_scopes (tree scope)
 	 && scope != global_namespace)
     {
       if ((TREE_CODE (scope) == NAMESPACE_DECL || OVERLOAD_TYPE_P (scope))
-	  && cp_warn_deprecated_use (scope))
+	  && cp_handle_deprecated_or_unavailable (scope))
 	return;
       if (TYPE_P (scope))
 	scope = CP_TYPE_CONTEXT (scope);
@@ -5646,7 +5718,7 @@ mark_used (tree decl, tsubst_flags_t complain)
       TREE_USED (decl) = true;
     }
 
-  cp_warn_deprecated_use (decl, complain);
+  cp_handle_deprecated_or_unavailable (decl, complain);
 
   /* We can only check DECL_ODR_USED on variables or functions with
      DECL_LANG_SPECIFIC set, and these are also the only decls that we

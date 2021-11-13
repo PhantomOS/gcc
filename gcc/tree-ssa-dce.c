@@ -414,10 +414,11 @@ find_obviously_necessary_stmts (bool aggressive)
   if ((flags & (ECF_CONST|ECF_PURE)) && !(flags & ECF_LOOPING_CONST_OR_PURE))
     return;
 
-  /* Prevent the empty possibly infinite loops from being removed.  */
+  /* Prevent the empty possibly infinite loops from being removed.  This is
+     needed to make the logic in remove_dead_stmt work to identify the
+     correct edge to keep when removing a controlling condition.  */
   if (aggressive)
     {
-      class loop *loop;
       if (mark_irreducible_loops ())
 	FOR_EACH_BB_FN (bb, cfun)
 	  {
@@ -427,17 +428,19 @@ find_obviously_necessary_stmts (bool aggressive)
 		  && (e->flags & EDGE_IRREDUCIBLE_LOOP))
 		{
 	          if (dump_file)
-	            fprintf (dump_file, "Marking back edge of irreducible loop %i->%i\n",
-		    	     e->src->index, e->dest->index);
+		    fprintf (dump_file, "Marking back edge of irreducible "
+			     "loop %i->%i\n", e->src->index, e->dest->index);
 		  mark_control_dependent_edges_necessary (e->dest, false);
 		}
 	  }
 
-      FOR_EACH_LOOP (loop, 0)
-	if (!finite_loop_p (loop))
+      for (auto loop : loops_list (cfun, 0))
+	/* For loops without an exit do not mark any condition.  */
+	if (loop->exits->next->e && !finite_loop_p (loop))
 	  {
 	    if (dump_file)
-	      fprintf (dump_file, "cannot prove finiteness of loop %i\n", loop->num);
+	      fprintf (dump_file, "cannot prove finiteness of loop %i\n",
+		       loop->num);
 	    mark_control_dependent_edges_necessary (loop->latch, false);
 	  }
     }
@@ -1275,7 +1278,6 @@ eliminate_unnecessary_stmts (void)
   gimple_stmt_iterator gsi, psi;
   gimple *stmt;
   tree call;
-  vec<basic_block> h;
   auto_vec<edge> to_remove_edges;
 
   if (dump_file && (dump_flags & TDF_DETAILS))
@@ -1306,6 +1308,7 @@ eliminate_unnecessary_stmts (void)
 
      as desired.  */
   gcc_assert (dom_info_available_p (CDI_DOMINATORS));
+  auto_vec<basic_block> h;
   h = get_all_dominated_blocks (CDI_DOMINATORS,
 				single_succ (ENTRY_BLOCK_PTR_FOR_FN (cfun)));
 
@@ -1460,7 +1463,6 @@ eliminate_unnecessary_stmts (void)
       something_changed |= remove_dead_phis (bb);
     }
 
-  h.release ();
 
   /* Since we don't track liveness of virtual PHI nodes, it is possible that we
      rendered some PHI nodes unreachable while they are still in use.
@@ -1824,6 +1826,11 @@ simple_dce_from_worklist (bitmap worklist)
 
       gimple *t = SSA_NAME_DEF_STMT (def);
       if (gimple_has_side_effects (t))
+	continue;
+
+      /* Don't remove statements that are needed for non-call
+	 eh to work.  */
+      if (stmt_unremovable_because_of_non_call_eh_p (cfun, t))
 	continue;
 
       /* Add uses to the worklist.  */

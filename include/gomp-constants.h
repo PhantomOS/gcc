@@ -40,11 +40,22 @@
 #define GOMP_MAP_FLAG_SPECIAL_0		(1 << 2)
 #define GOMP_MAP_FLAG_SPECIAL_1		(1 << 3)
 #define GOMP_MAP_FLAG_SPECIAL_2		(1 << 4)
+#define GOMP_MAP_FLAG_SPECIAL_3		(1 << 5)
 #define GOMP_MAP_FLAG_SPECIAL_4		(1 << 6)
 #define GOMP_MAP_FLAG_SPECIAL		(GOMP_MAP_FLAG_SPECIAL_1 \
 					 | GOMP_MAP_FLAG_SPECIAL_0)
 #define GOMP_MAP_DEEP_COPY		(GOMP_MAP_FLAG_SPECIAL_4 \
 					 | GOMP_MAP_FLAG_SPECIAL_2)
+/* This value indicates the map was created implicitly according to
+   OpenMP rules.  */
+#define GOMP_MAP_IMPLICIT		(GOMP_MAP_FLAG_SPECIAL_3 \
+					 | GOMP_MAP_FLAG_SPECIAL_4)
+/* Mask for entire set of special map kind bits.  */
+#define GOMP_MAP_FLAG_SPECIAL_BITS	(GOMP_MAP_FLAG_SPECIAL_0 \
+					 | GOMP_MAP_FLAG_SPECIAL_1 \
+					 | GOMP_MAP_FLAG_SPECIAL_2 \
+					 | GOMP_MAP_FLAG_SPECIAL_3 \
+					 | GOMP_MAP_FLAG_SPECIAL_4)
 /* Flag to force a specific behavior (or else, trigger a run-time error).  */
 #define GOMP_MAP_FLAG_FORCE		(1 << 7)
 
@@ -186,6 +197,9 @@ enum gomp_map_kind
 #define GOMP_MAP_ALWAYS_P(X) \
   (GOMP_MAP_ALWAYS_TO_P (X) || ((X) == GOMP_MAP_ALWAYS_FROM))
 
+#define GOMP_MAP_IMPLICIT_P(X) \
+  (((X) & GOMP_MAP_FLAG_SPECIAL_BITS) == GOMP_MAP_IMPLICIT)
+
 
 /* Asynchronous behavior.  Keep in sync with
    libgomp/{openacc.h,openacc.f90,openacc_lib.h}:acc_async_t.  */
@@ -222,6 +236,7 @@ enum gomp_map_kind
 #define GOMP_TASK_FLAG_NOGROUP		(1 << 11)
 #define GOMP_TASK_FLAG_REDUCTION	(1 << 12)
 #define GOMP_TASK_FLAG_DETACH		(1 << 13)
+#define GOMP_TASK_FLAG_STRICT		(1 << 14)
 
 /* GOMP_target{_ext,update_ext,enter_exit_data} flags argument.  */
 #define GOMP_TARGET_FLAG_NOWAIT		(1 << 0)

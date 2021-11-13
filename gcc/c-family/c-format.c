@@ -493,8 +493,8 @@ static const format_length_info printf_length_specs[] =
   { "Z", FMT_LEN_z, STD_EXT, NO_FMT, 0 },
   { "t", FMT_LEN_t, STD_C99, NO_FMT, 0 },
   { "j", FMT_LEN_j, STD_C99, NO_FMT, 0 },
-  { "H", FMT_LEN_H, STD_EXT, NO_FMT, 0 },
-  { "D", FMT_LEN_D, STD_EXT, "DD", FMT_LEN_DD, STD_EXT, 0 },
+  { "H", FMT_LEN_H, STD_C2X, NO_FMT, 0 },
+  { "D", FMT_LEN_D, STD_C2X, "DD", FMT_LEN_DD, STD_C2X, 0 },
   { NO_FMT, NO_FMT, 0 }
 };
 
@@ -530,8 +530,8 @@ static const format_length_info scanf_length_specs[] =
   { "z", FMT_LEN_z, STD_C99, NO_FMT, 0 },
   { "t", FMT_LEN_t, STD_C99, NO_FMT, 0 },
   { "j", FMT_LEN_j, STD_C99, NO_FMT, 0 },
-  { "H", FMT_LEN_H, STD_EXT, NO_FMT, 0 },
-  { "D", FMT_LEN_D, STD_EXT, "DD", FMT_LEN_DD, STD_EXT, 0 },
+  { "H", FMT_LEN_H, STD_C2X, NO_FMT, 0 },
+  { "D", FMT_LEN_D, STD_C2X, "DD", FMT_LEN_DD, STD_C2X, 0 },
   { NO_FMT, NO_FMT, 0 }
 };
 
@@ -546,10 +546,11 @@ static const format_length_info strfmon_length_specs[] =
 };
 
 
-/* For now, the Fortran front-end routines only use l as length modifier.  */
+/* Length modifiers used by the fortran/error.c routines.  */
 static const format_length_info gcc_gfc_length_specs[] =
 {
-  { "l", FMT_LEN_l, STD_C89, NO_FMT, 0 },
+  { "l", FMT_LEN_l, STD_C89, "ll", FMT_LEN_ll, STD_C89, 0 },
+  { "w", FMT_LEN_w, STD_C89, NO_FMT, 0 },
   { NO_FMT, NO_FMT, 0 }
 };
 
@@ -702,20 +703,23 @@ static const format_char_info print_char_table[] =
   { "di",  0, STD_C89, { T89_I,   T99_SC,  T89_S,   T89_L,   T9L_LL,  TEX_LL,  T99_SST, T99_PD,  T99_IM,  BADLEN,  BADLEN,  BADLEN  }, "-wp0 +'I",  "i",  NULL },
   { "oxX", 0, STD_C89, { T89_UI,  T99_UC,  T89_US,  T89_UL,  T9L_ULL, TEX_ULL, T99_ST,  T99_UPD, T99_UIM, BADLEN,  BADLEN,  BADLEN }, "-wp0#",     "i",  NULL },
   { "u",   0, STD_C89, { T89_UI,  T99_UC,  T89_US,  T89_UL,  T9L_ULL, TEX_ULL, T99_ST,  T99_UPD, T99_UIM, BADLEN,  BADLEN,  BADLEN }, "-wp0'I",    "i",  NULL },
-  { "fgG", 0, STD_C89, { T89_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64, TEX_D128 }, "-wp0 +#'I", "",   NULL },
-  { "eE",  0, STD_C89, { T89_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64, TEX_D128 }, "-wp0 +#I",  "",   NULL },
+  { "fgG", 0, STD_C89, { T89_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64, T2X_D128 }, "-wp0 +#'I", "",   NULL },
+  { "eE",  0, STD_C89, { T89_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64, T2X_D128 }, "-wp0 +#I",  "",   NULL },
   { "c",   0, STD_C89, { T89_I,   BADLEN,  BADLEN,  T94_WI,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-w",        "",   NULL },
   { "s",   1, STD_C89, { T89_C,   BADLEN,  BADLEN,  T94_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-wp",       "cR", NULL },
   { "p",   1, STD_C89, { T89_V,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-w",        "c",  NULL },
   { "n",   1, STD_C89, { T89_I,   T99_SC,  T89_S,   T89_L,   T9L_LL,  BADLEN,  T99_SST, T99_PD,  T99_IM,  BADLEN,  BADLEN,  BADLEN }, "",          "W",  NULL },
   /* C99 conversion specifiers.  */
-  { "F",   0, STD_C99, { T99_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64, TEX_D128 }, "-wp0 +#'I", "",   NULL },
-  { "aA",  0, STD_C99, { T99_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64,  TEX_D128 }, "-wp0 +#",   "",   NULL },
+  { "F",   0, STD_C99, { T99_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64, T2X_D128 }, "-wp0 +#'I", "",   NULL },
+  { "aA",  0, STD_C99, { T99_D,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64,  T2X_D128 }, "-wp0 +#",   "",   NULL },
+  /* C2X conversion specifiers.  */
+  { "b",   0, STD_C2X, { T2X_UI,  T2X_UC,  T2X_US,  T2X_UL,  T2X_ULL, TEX_ULL, T2X_ST,  T2X_UPD, T2X_UIM, BADLEN,  BADLEN,  BADLEN }, "-wp0#",     "i",  NULL },
   /* X/Open conversion specifiers.  */
   { "C",   0, STD_EXT, { TEX_WI,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-w",        "",   NULL },
   { "S",   1, STD_EXT, { TEX_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-wp",       "R",  NULL },
   /* GNU conversion specifiers.  */
   { "m",   0, STD_EXT, { T89_V,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "-wp",       "",   NULL },
+  { "B",   0, STD_EXT, { T2X_UI,  T2X_UC,  T2X_US,  T2X_UL,  T2X_ULL, TEX_ULL, T2X_ST,  T2X_UPD, T2X_UIM, BADLEN,  BADLEN,  BADLEN }, "-wp0#",     "i",  NULL },
   { NULL,  0, STD_C89, NOLENGTHS, NULL, NULL, NULL }
 };
 
@@ -781,10 +785,6 @@ static const format_char_info gcc_tdiag_char_table[] =
   /* These will require a "tree" at runtime.  */
   { "DFTV", 1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+", "'",   NULL },
   { "E", 1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+", "",   NULL },
-  { "K", 1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "", "\"",   NULL },
-
-  /* G requires a "gimple*" argument at runtime.  */
-  { "G", 1, STD_C89, { T89_G,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "", "\"",   NULL },
 
   { NULL,  0, STD_C89, NOLENGTHS, NULL, NULL, NULL }
 };
@@ -799,10 +799,6 @@ static const format_char_info gcc_cdiag_char_table[] =
   /* These will require a "tree" at runtime.  */
   { "DFTV", 1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+", "'",   NULL },
   { "E",   1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+", "",   NULL },
-  { "K",   1, STD_C89, { T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "", "\"",   NULL },
-
-  /* G requires a "gimple*" argument at runtime.  */
-  { "G",   1, STD_C89, { T89_G,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "", "\"",   NULL },
 
   { "v",   0, STD_C89, { T89_I,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q#",  "",   NULL },
 
@@ -819,10 +815,6 @@ static const format_char_info gcc_cxxdiag_char_table[] =
   /* These will require a "tree" at runtime.  */
   { "ADFHISTVX",1,STD_C89,{ T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+#",   "'",   NULL },
   { "E", 1,STD_C89,{ T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q+#",   "",   NULL },
-  { "K", 1, STD_C89,{ T89_T,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "",   "\"",   NULL },
-
-  /* G requires a "gimple*" argument at runtime.  */
-  { "G", 1, STD_C89,{ T89_G,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "",   "\"",   NULL },
 
   /* These accept either an 'int' or an 'enum tree_code' (which is handled as an 'int'.)  */
   { "CLOPQ",0,STD_C89, { T89_I,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q",  "",   NULL },
@@ -833,10 +825,10 @@ static const format_char_info gcc_cxxdiag_char_table[] =
 static const format_char_info gcc_gfc_char_table[] =
 {
   /* C89 conversion specifiers.  */
-  { "di",  0, STD_C89, { T89_I,   BADLEN,  BADLEN,  T89_L,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q", "", NULL },
-  { "u",   0, STD_C89, { T89_UI,  BADLEN,  BADLEN,  T89_UL,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q", "", NULL },
-  { "c",   0, STD_C89, { T89_I,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q", "", NULL },
-  { "s",   1, STD_C89, { T89_C,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN  }, "q", "cR", NULL },
+  { "di",  0, STD_C89, { T89_I,   BADLEN,  BADLEN,  T89_L,   T9L_LL,  BADLEN,  BADLEN,  BADLEN,  BADLEN, BADLEN, BADLEN, BADLEN }, "q", "", NULL },
+  { "u",   0, STD_C89, { T89_UI,  BADLEN,  BADLEN,  T89_UL,  T9L_ULL,  BADLEN,  BADLEN,  BADLEN,  BADLEN, BADLEN, BADLEN, BADLEN  }, "q", "", NULL },
+  { "c",   0, STD_C89, { T89_I,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN, BADLEN, BADLEN, BADLEN }, "q", "", NULL },
+  { "s",   1, STD_C89, { T89_C,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN, BADLEN, BADLEN, BADLEN }, "q", "cR", NULL },
 
   /* gfc conversion specifiers.  */
 
@@ -878,15 +870,17 @@ static const format_char_info scan_char_table[] =
   { "di",    1, STD_C89, { T89_I,   T99_SC,  T89_S,   T89_L,   T9L_LL,  TEX_LL,  T99_SST, T99_PD,  T99_IM,  BADLEN,  BADLEN,  BADLEN }, "*w'I", "W",   NULL },
   { "u",     1, STD_C89, { T89_UI,  T99_UC,  T89_US,  T89_UL,  T9L_ULL, TEX_ULL, T99_ST,  T99_UPD, T99_UIM, BADLEN,  BADLEN,  BADLEN }, "*w'I", "W",   NULL },
   { "oxX",   1, STD_C89, { T89_UI,  T99_UC,  T89_US,  T89_UL,  T9L_ULL, TEX_ULL, T99_ST,  T99_UPD, T99_UIM, BADLEN,  BADLEN,  BADLEN }, "*w",   "W",   NULL },
-  { "efgEG", 1, STD_C89, { T89_F,   BADLEN,  BADLEN,  T89_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64, TEX_D128 }, "*w'",  "W",   NULL },
+  { "efgEG", 1, STD_C89, { T89_F,   BADLEN,  BADLEN,  T89_D,   BADLEN,  T89_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64, T2X_D128 }, "*w'",  "W",   NULL },
   { "c",     1, STD_C89, { T89_C,   BADLEN,  BADLEN,  T94_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*mw",   "cW",  NULL },
   { "s",     1, STD_C89, { T89_C,   BADLEN,  BADLEN,  T94_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*amw",  "cW",  NULL },
   { "[",     1, STD_C89, { T89_C,   BADLEN,  BADLEN,  T94_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*amw",  "cW[", NULL },
   { "p",     2, STD_C89, { T89_V,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*w",   "W",   NULL },
   { "n",     1, STD_C89, { T89_I,   T99_SC,  T89_S,   T89_L,   T9L_LL,  BADLEN,  T99_SST, T99_PD,  T99_IM,  BADLEN,  BADLEN,  BADLEN }, "",     "W",   NULL },
   /* C99 conversion specifiers.  */
-  { "F",   1, STD_C99, { T99_F,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32, TEX_D64, TEX_D128 }, "*w'",  "W",   NULL },
-  { "aA",   1, STD_C99, { T99_F,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  TEX_D32,  TEX_D64,  TEX_D128 }, "*w'",  "W",   NULL },
+  { "F",   1, STD_C99, { T99_F,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32, T2X_D64, T2X_D128 }, "*w'",  "W",   NULL },
+  { "aA",   1, STD_C99, { T99_F,   BADLEN,  BADLEN,  T99_D,   BADLEN,  T99_LD,  BADLEN,  BADLEN,  BADLEN,  T2X_D32,  T2X_D64,  T2X_D128 }, "*w'",  "W",   NULL },
+  /* C2X conversion specifiers.  */
+  { "b",     1, STD_C2X, { T2X_UI,  T2X_UC,  T2X_US,  T2X_UL,  T2X_ULL, TEX_ULL, T2X_ST,  T2X_UPD, T2X_UIM, BADLEN,  BADLEN,  BADLEN }, "*w",   "W",   NULL },
   /* X/Open conversion specifiers.  */
   { "C",     1, STD_EXT, { TEX_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*mw",   "W",   NULL },
   { "S",     1, STD_EXT, { TEX_W,   BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN,  BADLEN }, "*amw",  "W",   NULL },
@@ -4855,12 +4849,73 @@ init_dynamic_asm_fprintf_info (void)
     }
 }
 
+static const format_length_info*
+get_init_dynamic_hwi (void)
+{
+  static tree hwi;
+  static format_length_info *diag_ls;
+
+  if (!hwi)
+    {
+      unsigned int i;
+
+      /* Find the underlying type for HOST_WIDE_INT.  For the 'w'
+	 length modifier to work, one must have issued: "typedef
+	 HOST_WIDE_INT __gcc_host_wide_int__;" in one's source code
+	 prior to using that modifier.  */
+      if ((hwi = maybe_get_identifier ("__gcc_host_wide_int__")))
+	{
+	  hwi = identifier_global_value (hwi);
+	  if (hwi)
+	    {
+	      if (TREE_CODE (hwi) != TYPE_DECL)
+		{
+		  error ("%<__gcc_host_wide_int__%> is not defined as a type");
+		  hwi = 0;
+		}
+	      else
+		{
+		  hwi = DECL_ORIGINAL_TYPE (hwi);
+		  gcc_assert (hwi);
+		  if (hwi != long_integer_type_node
+		      && hwi != long_long_integer_type_node)
+		    {
+		      error ("%<__gcc_host_wide_int__%> is not defined"
+			     " as %<long%> or %<long long%>");
+		      hwi = 0;
+		    }
+		}
+	    }
+	}
+      if (!diag_ls)
+	diag_ls = (format_length_info *)
+		  xmemdup (gcc_diag_length_specs,
+			   sizeof (gcc_diag_length_specs),
+			   sizeof (gcc_diag_length_specs));
+      if (hwi)
+	{
+	  /* HOST_WIDE_INT must be one of 'long' or 'long long'.  */
+	  i = find_length_info_modifier_index (diag_ls, 'w');
+	  if (hwi == long_integer_type_node)
+	    diag_ls[i].index = FMT_LEN_l;
+	  else if (hwi == long_long_integer_type_node)
+	    diag_ls[i].index = FMT_LEN_ll;
+	  else
+	    gcc_unreachable ();
+	}
+    }
+  return diag_ls;
+}
+
 /* Determine the type of a "locus" in the code being compiled for use
    in GCC's __gcc_gfc__ custom format attribute.  You must have set
    dynamic_format_types before calling this function.  */
 static void
 init_dynamic_gfc_info (void)
 {
+  dynamic_format_types[gcc_gfc_format_type].length_char_specs
+    = get_init_dynamic_hwi ();
+
   if (!locus)
     {
       static format_char_info *gfc_fci;
@@ -4997,67 +5052,13 @@ init_dynamic_diag_info (void)
       || local_event_ptr_node == void_type_node)
     local_event_ptr_node = get_named_type ("diagnostic_event_id_t");
 
-  static tree hwi;
-
-  if (!hwi)
-    {
-      static format_length_info *diag_ls;
-      unsigned int i;
-
-      /* Find the underlying type for HOST_WIDE_INT.  For the 'w'
-	 length modifier to work, one must have issued: "typedef
-	 HOST_WIDE_INT __gcc_host_wide_int__;" in one's source code
-	 prior to using that modifier.  */
-      if ((hwi = maybe_get_identifier ("__gcc_host_wide_int__")))
-	{
-	  hwi = identifier_global_value (hwi);
-	  if (hwi)
-	    {
-	      if (TREE_CODE (hwi) != TYPE_DECL)
-		{
-		  error ("%<__gcc_host_wide_int__%> is not defined as a type");
-		  hwi = 0;
-		}
-	      else
-		{
-		  hwi = DECL_ORIGINAL_TYPE (hwi);
-		  gcc_assert (hwi);
-		  if (hwi != long_integer_type_node
-		      && hwi != long_long_integer_type_node)
-		    {
-		      error ("%<__gcc_host_wide_int__%> is not defined"
-			     " as %<long%> or %<long long%>");
-		      hwi = 0;
-		    }
-		}
-	    }
-	}
-
-      /* Assign the new data for use.  */
-
-      /* All the GCC diag formats use the same length specs.  */
-      if (!diag_ls)
-	dynamic_format_types[gcc_diag_format_type].length_char_specs =
-	  dynamic_format_types[gcc_tdiag_format_type].length_char_specs =
-	  dynamic_format_types[gcc_cdiag_format_type].length_char_specs =
-	  dynamic_format_types[gcc_cxxdiag_format_type].length_char_specs =
-	  dynamic_format_types[gcc_dump_printf_format_type].length_char_specs =
-	  diag_ls = (format_length_info *)
-		    xmemdup (gcc_diag_length_specs,
-			     sizeof (gcc_diag_length_specs),
-			     sizeof (gcc_diag_length_specs));
-      if (hwi)
-	{
-	  /* HOST_WIDE_INT must be one of 'long' or 'long long'.  */
-	  i = find_length_info_modifier_index (diag_ls, 'w');
-	  if (hwi == long_integer_type_node)
-	    diag_ls[i].index = FMT_LEN_l;
-	  else if (hwi == long_long_integer_type_node)
-	    diag_ls[i].index = FMT_LEN_ll;
-	  else
-	    gcc_unreachable ();
-	}
-    }
+  /* All the GCC diag formats use the same length specs.  */
+  dynamic_format_types[gcc_diag_format_type].length_char_specs =
+    dynamic_format_types[gcc_tdiag_format_type].length_char_specs =
+    dynamic_format_types[gcc_cdiag_format_type].length_char_specs =
+    dynamic_format_types[gcc_cxxdiag_format_type].length_char_specs =
+    dynamic_format_types[gcc_dump_printf_format_type].length_char_specs
+    = get_init_dynamic_hwi ();
 
   /* It's safe to "re-initialize these to the same values.  */
   dynamic_format_types[gcc_diag_format_type].conversion_specs =
@@ -5154,7 +5155,7 @@ handle_format_attribute (tree *node, tree atname, tree args,
 #ifdef TARGET_FORMAT_TYPES
   /* If the target provides additional format types, we need to
      add them to FORMAT_TYPES at first use.  */
-  if (TARGET_FORMAT_TYPES != NULL && !dynamic_format_types)
+  if (!dynamic_format_types)
     {
       dynamic_format_types = XNEWVEC (format_kind_info,
 				      n_format_types + TARGET_N_FORMAT_TYPES);

@@ -543,7 +543,7 @@ gfc_free_actual_arglist (gfc_actual_arglist *a1)
     {
       a2 = a1->next;
       if (a1->expr)
-      gfc_free_expr (a1->expr);
+	gfc_free_expr (a1->expr);
       free (a1);
       a1 = a2;
     }
@@ -990,6 +990,34 @@ done:
 }
 
 
+/* Standard intrinsics listed under F2018:10.1.12 (6), which are excluded in
+   constant expressions, except TRANSFER (c.f. item (8)), which would need
+   separate treatment.  */
+
+static bool
+is_non_constant_intrinsic (gfc_expr *e)
+{
+  if (e->expr_type == EXPR_FUNCTION
+      && e->value.function.isym)
+    {
+      switch (e->value.function.isym->id)
+	{
+	  case GFC_ISYM_COMMAND_ARGUMENT_COUNT:
+	  case GFC_ISYM_GET_TEAM:
+	  case GFC_ISYM_NULL:
+	  case GFC_ISYM_NUM_IMAGES:
+	  case GFC_ISYM_TEAM_NUMBER:
+	  case GFC_ISYM_THIS_IMAGE:
+	    return true;
+
+	default:
+	  return false;
+	}
+    }
+  return false;
+}
+
+
 /* Determine if an expression is constant in the sense of F08:7.1.12.
  * This function expects that the expression has already been simplified.  */
 
@@ -1022,6 +1050,10 @@ gfc_is_constant_expr (gfc_expr *e)
     case EXPR_COMPCALL:
       gcc_assert (e->symtree || e->value.function.esym
 		  || e->value.function.isym);
+
+      /* Check for intrinsics excluded in constant expressions.  */
+      if (e->value.function.isym && is_non_constant_intrinsic (e))
+	return false;
 
       /* Call to intrinsic with at least one argument.  */
       if (e->value.function.isym && e->value.function.actual)
@@ -1078,11 +1110,13 @@ is_CFI_desc (gfc_symbol *sym, gfc_expr *e)
 
   if (sym && sym->attr.dummy
       && sym->ns->proc_name->attr.is_bind_c
-      && sym->attr.dimension
       && (sym->attr.pointer
 	  || sym->attr.allocatable
-	  || sym->as->type == AS_ASSUMED_SHAPE
-	  || sym->as->type == AS_ASSUMED_RANK))
+	  || (sym->attr.dimension
+	      && (sym->as->type == AS_ASSUMED_SHAPE
+		  || sym->as->type == AS_ASSUMED_RANK))
+	  || (sym->ts.type == BT_CHARACTER
+	      && (!sym->ts.u.cl || !sym->ts.u.cl->length))))
     return true;
 
 return false;
@@ -1337,7 +1371,9 @@ find_array_element (gfc_constructor_base base, gfc_array_ref *ar,
   for (i = 0; i < ar->dimen; i++)
     {
       if (!gfc_reduce_init_expr (ar->as->lower[i])
-	  || !gfc_reduce_init_expr (ar->as->upper[i]))
+	  || !gfc_reduce_init_expr (ar->as->upper[i])
+	  || ar->as->upper[i]->expr_type != EXPR_CONSTANT
+	  || ar->as->lower[i]->expr_type != EXPR_CONSTANT)
 	{
 	  t = false;
 	  cons = NULL;
@@ -1350,9 +1386,6 @@ find_array_element (gfc_constructor_base base, gfc_array_ref *ar,
 	  cons = NULL;
 	  goto depart;
 	}
-
-      gcc_assert (ar->as->upper[i]->expr_type == EXPR_CONSTANT
-		  && ar->as->lower[i]->expr_type == EXPR_CONSTANT);
 
       /* Check the bounds.  */
       if ((ar->as->upper[i]
@@ -1725,8 +1758,8 @@ find_substring_ref (gfc_expr *p, gfc_expr **newp)
   *newp = gfc_copy_expr (p);
   free ((*newp)->value.character.string);
 
-  end = (gfc_charlen_t) mpz_get_ui (p->ref->u.ss.end->value.integer);
-  start = (gfc_charlen_t) mpz_get_ui (p->ref->u.ss.start->value.integer);
+  end = (gfc_charlen_t) mpz_get_si (p->ref->u.ss.end->value.integer);
+  start = (gfc_charlen_t) mpz_get_si (p->ref->u.ss.start->value.integer);
   if (end >= start)
     length = end - start + 1;
   else
@@ -2095,6 +2128,8 @@ simplify_parameter_variable (gfc_expr *p, int type)
       if (e == NULL)
 	return false;
 
+      gfc_free_shape (&e->shape, e->rank);
+      e->shape = gfc_copy_shape (p->shape, p->rank);
       e->rank = p->rank;
 
       if (e->ts.type == BT_CHARACTER && p->ts.u.cl)
@@ -2172,7 +2207,8 @@ gfc_simplify_expr (gfc_expr *p, int type)
 	  (p->value.function.isym->id == GFC_ISYM_LBOUND
 	   || p->value.function.isym->id == GFC_ISYM_UBOUND
 	   || p->value.function.isym->id == GFC_ISYM_LCOBOUND
-	   || p->value.function.isym->id == GFC_ISYM_UCOBOUND))
+	   || p->value.function.isym->id == GFC_ISYM_UCOBOUND
+	   || p->value.function.isym->id == GFC_ISYM_SHAPE))
 	ap = ap->next;
 
       for ( ; ap; ap = ap->next)
@@ -3815,6 +3851,9 @@ gfc_check_pointer_assign (gfc_expr *lvalue, gfc_expr *rvalue,
   int proc_pointer;
   bool same_rank;
 
+  if (!lvalue->symtree)
+    return false;
+
   lhs_attr = gfc_expr_attr (lvalue);
   if (lvalue->ts.type == BT_UNKNOWN && !lhs_attr.proc_pointer)
     {
@@ -4550,21 +4589,12 @@ gfc_check_assign_symbol (gfc_symbol *sym, gfc_component *comp, gfc_expr *rvalue)
   return true;
 }
 
-/* Invoke gfc_build_init_expr to create an initializer expression, but do not
- * require that an expression be built.  */
-
-gfc_expr *
-gfc_build_default_init_expr (gfc_typespec *ts, locus *where)
-{
-  return gfc_build_init_expr (ts, where, false);
-}
-
 /* Build an initializer for a local integer, real, complex, logical, or
    character variable, based on the command line flags finit-local-zero,
    finit-integer=, finit-real=, finit-logical=, and finit-character=.
    With force, an initializer is ALWAYS generated.  */
 
-gfc_expr *
+static gfc_expr *
 gfc_build_init_expr (gfc_typespec *ts, locus *where, bool force)
 {
   gfc_expr *init_expr;
@@ -4721,6 +4751,15 @@ gfc_build_init_expr (gfc_typespec *ts, locus *where, bool force)
   return init_expr;
 }
 
+/* Invoke gfc_build_init_expr to create an initializer expression, but do not
+ * require that an expression be built.  */
+
+gfc_expr *
+gfc_build_default_init_expr (gfc_typespec *ts, locus *where)
+{
+  return gfc_build_init_expr (ts, where, false);
+}
+
 /* Apply an initialization expression to a typespec. Can be used for symbols or
    components. Similar to add_init_expr_to_sym in decl.c; could probably be
    combined with some effort.  */
@@ -4780,7 +4819,7 @@ gfc_apply_init (gfc_typespec *ts, symbol_attribute *attr, gfc_expr *init)
 /* Check whether an expression is a structure constructor and whether it has
    other values than NULL.  */
 
-bool
+static bool
 is_non_empty_structure_constructor (gfc_expr * e)
 {
   if (e->expr_type != EXPR_STRUCTURE)
@@ -6195,6 +6234,16 @@ gfc_check_vardef_context (gfc_expr* e, bool pointer, bool alloc_obj,
 	  ptr_component = true;
 	  if (!pointer)
 	    check_intentin = false;
+	}
+      if (ref->type == REF_INQUIRY
+	  && (ref->u.i == INQUIRY_KIND || ref->u.i == INQUIRY_LEN))
+	{
+	  if (context)
+	    gfc_error ("%qs parameter inquiry for %qs in "
+		       "variable definition context (%s) at %L",
+		       ref->u.i == INQUIRY_KIND ? "KIND" : "LEN",
+		       sym->name, context, &e->where);
+	  return false;
 	}
     }
 

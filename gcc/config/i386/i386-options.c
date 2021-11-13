@@ -131,7 +131,7 @@ along with GCC; see the file COPYING3.  If not see
 		       | m_ICELAKE_CLIENT | m_ICELAKE_SERVER | m_CASCADELAKE \
 		       | m_TIGERLAKE | m_COOPERLAKE | m_SAPPHIRERAPIDS \
 		       | m_ROCKETLAKE)
-#define m_CORE_AVX2 (m_HASWELL | m_SKYLAKE | m_ALDERLAKE | m_CORE_AVX512)
+#define m_CORE_AVX2 (m_HASWELL | m_SKYLAKE | m_CORE_AVX512)
 #define m_CORE_ALL (m_CORE2 | m_NEHALEM  | m_SANDYBRIDGE | m_CORE_AVX2)
 #define m_GOLDMONT (HOST_WIDE_INT_1U<<PROCESSOR_GOLDMONT)
 #define m_GOLDMONT_PLUS (HOST_WIDE_INT_1U<<PROCESSOR_GOLDMONT_PLUS)
@@ -223,7 +223,8 @@ static struct ix86_target_opts isa2_opts[] =
   { "-mhreset",		OPTION_MASK_ISA2_HRESET },
   { "-mkl",		OPTION_MASK_ISA2_KL },
   { "-mwidekl", 	OPTION_MASK_ISA2_WIDEKL },
-  { "-mavxvnni",	OPTION_MASK_ISA2_AVXVNNI }
+  { "-mavxvnni",	OPTION_MASK_ISA2_AVXVNNI },
+  { "-mavx512fp16",	OPTION_MASK_ISA2_AVX512FP16 }
 };
 static struct ix86_target_opts isa_opts[] =
 {
@@ -304,6 +305,10 @@ ix86_omp_device_kind_arch_isa (enum omp_device_kind_arch_isa trait,
     case omp_device_kind:
       return strcmp (name, "cpu") == 0;
     case omp_device_arch:
+#ifdef ACCEL_COMPILER
+      if (strcmp (name, "intel_mic") == 0)
+	return 1;
+#endif
       if (strcmp (name, "x86") == 0)
 	return 1;
       if (TARGET_64BIT)
@@ -719,9 +724,9 @@ static const struct processor_costs *processor_cost_table[] =
   &slm_cost,
   &slm_cost,
   &slm_cost,
+  &tremont_cost,
   &slm_cost,
   &slm_cost,
-  &slm_cost,
   &skylake_cost,
   &skylake_cost,
   &icelake_cost,
@@ -731,7 +736,7 @@ static const struct processor_costs *processor_cost_table[] =
   &icelake_cost,
   &skylake_cost,
   &icelake_cost,
-  &icelake_cost,
+  &alderlake_cost,
   &icelake_cost,
   &intel_cost,
   &geode_cost,
@@ -1045,6 +1050,7 @@ ix86_valid_target_attribute_inner_p (tree fndecl, tree args, char *p_strings[],
     IX86_ATTR_ISA ("amx-bf16", OPT_mamx_bf16),
     IX86_ATTR_ISA ("hreset", OPT_mhreset),
     IX86_ATTR_ISA ("avxvnni",   OPT_mavxvnni),
+    IX86_ATTR_ISA ("avx512fp16", OPT_mavx512fp16),
 
     /* enum options */
     IX86_ATTR_ENUM ("fpmath=",	OPT_mfpmath_),
@@ -2109,6 +2115,7 @@ ix86_option_override_internal (bool main_args_p,
 #define DEF_PTA(NAME) \
 	if (((processor_alias_table[i].flags & PTA_ ## NAME) != 0) \
 	    && PTA_ ## NAME != PTA_64BIT \
+	    && (TARGET_64BIT || PTA_ ## NAME != PTA_UINTR) \
 	    && !TARGET_EXPLICIT_ ## NAME ## _P (opts)) \
 	  SET_TARGET_ ## NAME (opts);
 #include "i386-isa.def"
@@ -2123,8 +2130,10 @@ ix86_option_override_internal (bool main_args_p,
 	if (((processor_alias_table[i].flags & PTA_ABM) != 0)
 	    && !TARGET_EXPLICIT_ABM_P (opts))
 	  {
-	    SET_TARGET_LZCNT (opts);
-	    SET_TARGET_POPCNT (opts);
+	    if (!TARGET_EXPLICIT_LZCNT_P (opts))
+	      SET_TARGET_LZCNT (opts);
+	    if (!TARGET_EXPLICIT_POPCNT_P (opts))
+	      SET_TARGET_POPCNT (opts);
 	  }
 
 	if ((processor_alias_table[i].flags
@@ -2570,6 +2579,12 @@ ix86_option_override_internal (bool main_args_p,
   SET_OPTION_IF_UNSET (opts, opts_set, param_l2_cache_size,
 		       ix86_tune_cost->l2_cache_size);
 
+  /* 64B is the accepted value for these for all x86.  */
+  SET_OPTION_IF_UNSET (&global_options, &global_options_set,
+		       param_destruct_interfere_size, 64);
+  SET_OPTION_IF_UNSET (&global_options, &global_options_set,
+		       param_construct_interfere_size, 64);
+
   /* Enable sw prefetching at -O3 for CPUS that prefetching is helpful.  */
   if (opts->x_flag_prefetch_loop_arrays < 0
       && HAVE_prefetch
@@ -2830,6 +2845,13 @@ ix86_option_override_internal (bool main_args_p,
      The PR provides some numbers about the slowness.  */
   if (ix86_indirect_branch != indirect_branch_keep)
     SET_OPTION_IF_UNSET (opts, opts_set, flag_jump_tables, 0);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, param_ira_consider_dup_in_all_alts, 0);
+
+  /* Fully masking the main or the epilogue vectorized loop is not
+     profitable generally so leave it disabled until we get more
+     fine grained control & costing.  */
+  SET_OPTION_IF_UNSET (opts, opts_set, param_vect_partial_vector_usage, 0);
 
   return true;
 }

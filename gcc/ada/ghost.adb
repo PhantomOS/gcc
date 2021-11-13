@@ -584,6 +584,15 @@ package body Ghost is
    --  Start of processing for Check_Ghost_Context
 
    begin
+      --  Class-wide pre/postconditions of ignored pragmas are preanalyzed
+      --  to report errors on wrong conditions; however, ignored pragmas may
+      --  also have references to ghost entities and we must disable checking
+      --  their context to avoid reporting spurious errors.
+
+      if Inside_Class_Condition_Preanalysis then
+         return;
+      end if;
+
       --  Once it has been established that the reference to the Ghost entity
       --  is within a suitable context, ensure that the policy at the point of
       --  declaration and at the point of use match.
@@ -1245,11 +1254,21 @@ package body Ghost is
       --  processing them in that mode can lead to spurious errors.
 
       if Expander_Active then
+         --  Cases where full analysis is needed, involving array indexing
+         --  which would otherwise be missing array-bounds checks:
+
          if not Analyzed (Orig_Lhs)
-           and then Nkind (Orig_Lhs) = N_Indexed_Component
-           and then Nkind (Prefix (Orig_Lhs)) = N_Selected_Component
-           and then Nkind (Prefix (Prefix (Orig_Lhs))) =
-           N_Indexed_Component
+           and then
+             ((Nkind (Orig_Lhs) = N_Indexed_Component
+                and then Nkind (Prefix (Orig_Lhs)) = N_Selected_Component
+                and then Nkind (Prefix (Prefix (Orig_Lhs))) =
+                           N_Indexed_Component)
+              or else
+             (Nkind (Orig_Lhs) = N_Selected_Component
+              and then Nkind (Prefix (Orig_Lhs)) = N_Indexed_Component
+              and then Nkind (Prefix (Prefix (Orig_Lhs))) =
+                         N_Selected_Component
+              and then Nkind (Parent (N)) /= N_Loop_Statement))
          then
             Analyze (Orig_Lhs);
          end if;

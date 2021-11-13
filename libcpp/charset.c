@@ -630,7 +630,11 @@ static const struct cpp_conversion conversion_tab[] = {
    cset_converter structure for conversion from FROM to TO.  If
    iconv_open() fails, issue an error and return an identity
    converter.  Silently return an identity converter if FROM and TO
-   are identical.  */
+   are identical.
+
+   PFILE is only used for generating diagnostics; setting it to NULL
+   suppresses diagnostics.  */
+
 static struct cset_converter
 init_iconv_desc (cpp_reader *pfile, const char *to, const char *from)
 {
@@ -672,25 +676,31 @@ init_iconv_desc (cpp_reader *pfile, const char *to, const char *from)
 
       if (ret.cd == (iconv_t) -1)
 	{
-	  if (errno == EINVAL)
-	    cpp_error (pfile, CPP_DL_ERROR, /* FIXME should be DL_SORRY */
-		       "conversion from %s to %s not supported by iconv",
-		       from, to);
-	  else
-	    cpp_errno (pfile, CPP_DL_ERROR, "iconv_open");
-
+	  if (pfile)
+	    {
+	      if (errno == EINVAL)
+		cpp_error (pfile, CPP_DL_ERROR, /* FIXME should be DL_SORRY */
+			   "conversion from %s to %s not supported by iconv",
+			   from, to);
+	      else
+		cpp_errno (pfile, CPP_DL_ERROR, "iconv_open");
+	    }
 	  ret.func = convert_no_conversion;
 	}
     }
   else
     {
-      cpp_error (pfile, CPP_DL_ERROR, /* FIXME: should be DL_SORRY */
-		 "no iconv implementation, cannot convert from %s to %s",
-		 from, to);
+      if (pfile)
+	{
+	  cpp_error (pfile, CPP_DL_ERROR, /* FIXME: should be DL_SORRY */
+		     "no iconv implementation, cannot convert from %s to %s",
+		     from, to);
+	}
       ret.func = convert_no_conversion;
       ret.cd = (iconv_t) -1;
       ret.width = -1;
     }
+
   return ret;
 }
 
@@ -884,14 +894,18 @@ enum {
   C11 = 8,
   /* Valid in a C11/C++11 identifier, but not as the first character?  */
   N11 = 16,
+  /* Valid in a C++23 identifier?  */
+  CXX23 = 32,
+  /* Valid in a C++23 identifier, but not as the first character?  */
+  NXX23 = 64,
   /* NFC representation is not valid in an identifier?  */
-  CID = 32,
+  CID = 128,
   /* Might be valid NFC form?  */
-  NFC = 64,
+  NFC = 256,
   /* Might be valid NFKC form?  */
-  NKC = 128,
+  NKC = 512,
   /* Certain preceding characters might make it not valid NFC/NKFC form?  */
-  CTX = 256
+  CTX = 1024
 };
 
 struct ucnrange {
@@ -938,10 +952,12 @@ ucn_valid_in_identifier (cpp_reader *pfile, cppchar_t c,
   /* When -pedantic, we require the character to have been listed by
      the standard for the current language.  Otherwise, we accept the
      union of the acceptable sets for all supported language versions.  */
-  valid_flags = C99 | CXX | C11;
+  valid_flags = C99 | CXX | C11 | CXX23;
   if (CPP_PEDANTIC (pfile))
     {
-      if (CPP_OPTION (pfile, c11_identifiers))
+      if (CPP_OPTION (pfile, cxx23_identifiers))
+	valid_flags = CXX23;
+      else if (CPP_OPTION (pfile, c11_identifiers))
 	valid_flags = C11;
       else if (CPP_OPTION (pfile, c99))
 	valid_flags = C99;
@@ -950,12 +966,6 @@ ucn_valid_in_identifier (cpp_reader *pfile, cppchar_t c,
     }
   if (! (ucnranges[mn].flags & valid_flags))
       return 0;
-  if (CPP_OPTION (pfile, c11_identifiers))
-    invalid_start_flags = N11;
-  else if (CPP_OPTION (pfile, c99))
-    invalid_start_flags = N99;
-  else
-    invalid_start_flags = 0;
 
   /* Update NST.  */
   if (ucnranges[mn].combine != 0 && ucnranges[mn].combine < nst->prev_class)
@@ -997,6 +1007,28 @@ ucn_valid_in_identifier (cpp_reader *pfile, cppchar_t c,
   if (ucnranges[mn].combine == 0)
     nst->previous = c;
   nst->prev_class = ucnranges[mn].combine;
+
+  if (!CPP_PEDANTIC (pfile))
+    {
+      /* If not -pedantic, accept as character that may
+	 begin an identifier a union of characters allowed
+	 at that position in each of the character sets.  */
+      if ((ucnranges[mn].flags & (C99 | N99)) == C99
+	  || (ucnranges[mn].flags & CXX) != 0
+	  || (ucnranges[mn].flags & (C11 | N11)) == C11
+	  || (ucnranges[mn].flags & (CXX23 | NXX23)) == CXX23)
+	return 1;
+      return 2;
+    }
+
+  if (CPP_OPTION (pfile, cxx23_identifiers))
+    invalid_start_flags = NXX23;
+  else if (CPP_OPTION (pfile, c11_identifiers))
+    invalid_start_flags = N11;
+  else if (CPP_OPTION (pfile, c99))
+    invalid_start_flags = N99;
+  else
+    invalid_start_flags = 0;
 
   /* In C99, UCN digits may not begin identifiers.  In C11 and C++11,
      UCN combining characters may not begin identifiers.  */
@@ -1432,7 +1464,6 @@ convert_oct (cpp_reader *pfile, const uchar *from, const uchar *limit,
   cppchar_t c, n = 0;
   size_t width = cvt.width;
   size_t mask = width_to_mask (width);
-  bool overflow = false;
 
   /* loc_reader and ranges must either be both NULL, or both be non-NULL.  */
   gcc_assert ((loc_reader != NULL) == (ranges != NULL));
@@ -1445,7 +1476,6 @@ convert_oct (cpp_reader *pfile, const uchar *from, const uchar *limit,
       from++;
       if (loc_reader)
 	char_range.m_finish = loc_reader->get_next ().m_finish;
-      overflow |= n ^ (n << 3 >> 3);
       n = (n << 3) + c - '0';
     }
 
@@ -1552,12 +1582,14 @@ convert_escape (cpp_reader *pfile, const uchar *from, const uchar *limit,
 		   "unknown escape sequence: '\\%c'", (int) c);
       else
 	{
+	  encoding_rich_location rich_loc (pfile);
+
 	  /* diagnostic.c does not support "%03o".  When it does, this
 	     code can use %03o directly in the diagnostic again.  */
 	  char buf[32];
 	  sprintf(buf, "%03o", (int) c);
-	  cpp_error (pfile, CPP_DL_PEDWARN,
-		     "unknown escape sequence: '\\%s'", buf);
+	  cpp_error_at (pfile, CPP_DL_PEDWARN, &rich_loc,
+			"unknown escape sequence: '\\%s'", buf);
 	}
     }
 
@@ -2122,6 +2154,25 @@ _cpp_interpret_identifier (cpp_reader *pfile, const uchar *id, size_t len)
 				  buf, bufp - buf, HT_ALLOC));
 }
 
+
+/* Utility to strip a UTF-8 byte order marking from the beginning
+   of a buffer.  Returns the number of bytes to skip, which currently
+   will be either 0 or 3.  */
+int
+cpp_check_utf8_bom (const char *data, size_t data_length)
+{
+
+#if HOST_CHARSET == HOST_CHARSET_ASCII
+  const unsigned char *udata = (const unsigned char *) data;
+  if (data_length >= 3 && udata[0] == 0xef && udata[1] == 0xbb
+      && udata[2] == 0xbf)
+    return 3;
+#endif
+
+  return 0;
+}
+
+
 /* Convert an input buffer (containing the complete contents of one
    source file) from INPUT_CHARSET to the source character set.  INPUT
    points to the input buffer, SIZE is its allocated size, and LEN is
@@ -2135,7 +2186,11 @@ _cpp_interpret_identifier (cpp_reader *pfile, const uchar *id, size_t len)
    INPUT is expected to have been allocated with xmalloc.  This
    function will either set *BUFFER_START to INPUT, or free it and set
    *BUFFER_START to a pointer to another xmalloc-allocated block of
-   memory.  */
+   memory.
+
+   PFILE is only used to generate diagnostics; setting it to NULL suppresses
+   diagnostics, and causes a return of NULL if there was any error instead.  */
+
 uchar * 
 _cpp_convert_input (cpp_reader *pfile, const char *input_charset,
 		    uchar *input, size_t size, size_t len,
@@ -2158,17 +2213,27 @@ _cpp_convert_input (cpp_reader *pfile, const char *input_charset,
       to.text = XNEWVEC (uchar, to.asize);
       to.len = 0;
 
-      if (!APPLY_CONVERSION (input_cset, input, len, &to))
-	cpp_error (pfile, CPP_DL_ERROR,
-		   "failure to convert %s to %s",
-		   CPP_OPTION (pfile, input_charset), SOURCE_CHARSET);
-
+      const bool ok = APPLY_CONVERSION (input_cset, input, len, &to);
       free (input);
-    }
 
-  /* Clean up the mess.  */
-  if (input_cset.func == convert_using_iconv)
-    iconv_close (input_cset.cd);
+      /* Clean up the mess.  */
+      if (input_cset.func == convert_using_iconv)
+	iconv_close (input_cset.cd);
+
+      /* Handle conversion failure.  */
+      if (!ok)
+	{
+	  if (!pfile)
+	    {
+	      XDELETEVEC (to.text);
+	      *buffer_start = NULL;
+	      *st_size = 0;
+	      return NULL;
+	    }
+	  cpp_error (pfile, CPP_DL_ERROR, "failure to convert %s to %s",
+		     input_charset, SOURCE_CHARSET);
+	}
+    }
 
   /* Resize buffer if we allocated substantially too much, or if we
      haven't enough space for the \n-terminator or following
@@ -2192,19 +2257,14 @@ _cpp_convert_input (cpp_reader *pfile, const char *input_charset,
 
   buffer = to.text;
   *st_size = to.len;
-#if HOST_CHARSET == HOST_CHARSET_ASCII
-  /* The HOST_CHARSET test just above ensures that the source charset
-     is UTF-8.  So, ignore a UTF-8 BOM if we see one.  Note that
-     glib'c UTF-8 iconv() provider (as of glibc 2.7) does not ignore a
+
+  /* Ignore a UTF-8 BOM if we see one and the source charset is UTF-8.  Note
+     that glib'c UTF-8 iconv() provider (as of glibc 2.7) does not ignore a
      BOM -- however, even if it did, we would still need this code due
      to the 'convert_no_conversion' case.  */
-  if (to.len >= 3 && to.text[0] == 0xef && to.text[1] == 0xbb
-      && to.text[2] == 0xbf)
-    {
-      *st_size -= 3;
-      buffer += 3;
-    }
-#endif
+  const int bom_len = cpp_check_utf8_bom ((const char *) to.text, to.len);
+  *st_size -= bom_len;
+  buffer += bom_len;
 
   *buffer_start = to.text;
   return buffer;
@@ -2244,6 +2304,13 @@ _cpp_default_encoding (void)
   return current_encoding;
 }
 
+/* Check if the configured input charset requires no conversion, other than
+   possibly stripping a UTF-8 BOM.  */
+bool cpp_input_conversion_is_trivial (const char *input_charset)
+{
+  return !strcasecmp (input_charset, SOURCE_CHARSET);
+}
+
 /* Implementation of class cpp_string_location_reader.  */
 
 /* Constructor for cpp_string_location_reader.  */
@@ -2280,14 +2347,16 @@ cpp_string_location_reader::get_next ()
 }
 
 cpp_display_width_computation::
-cpp_display_width_computation (const char *data, int data_length, int tabstop) :
+cpp_display_width_computation (const char *data, int data_length,
+			       const cpp_char_column_policy &policy) :
   m_begin (data),
   m_next (m_begin),
   m_bytes_left (data_length),
-  m_tabstop (tabstop),
+  m_policy (policy),
   m_display_cols (0)
 {
-  gcc_assert (m_tabstop > 0);
+  gcc_assert (policy.m_tabstop > 0);
+  gcc_assert (policy.m_width_cb);
 }
 
 
@@ -2299,19 +2368,28 @@ cpp_display_width_computation (const char *data, int data_length, int tabstop) :
    point to a valid UTF-8-encoded sequence, then it will be treated as a single
    byte with display width 1.  m_cur_display_col is the current display column,
    relative to which tab stops should be expanded.  Returns the display width of
-   the codepoint just processed.  */
+   the codepoint just processed.
+   If OUT is non-NULL, it is populated.  */
 
 int
-cpp_display_width_computation::process_next_codepoint ()
+cpp_display_width_computation::process_next_codepoint (cpp_decoded_char *out)
 {
   cppchar_t c;
   int next_width;
+
+  if (out)
+    out->m_start_byte = m_next;
 
   if (*m_next == '\t')
     {
       ++m_next;
       --m_bytes_left;
-      next_width = m_tabstop - (m_display_cols % m_tabstop);
+      next_width = m_policy.m_tabstop - (m_display_cols % m_policy.m_tabstop);
+      if (out)
+	{
+	  out->m_ch = '\t';
+	  out->m_valid_ch = true;
+	}
     }
   else if (one_utf8_to_cppchar ((const uchar **) &m_next, &m_bytes_left, &c)
 	   != 0)
@@ -2321,13 +2399,23 @@ cpp_display_width_computation::process_next_codepoint ()
 	 of one.  */
       ++m_next;
       --m_bytes_left;
-      next_width = 1;
+      next_width = m_policy.m_undecoded_byte_width;
+      if (out)
+	out->m_valid_ch = false;
     }
   else
     {
       /*  one_utf8_to_cppchar() has updated m_next and m_bytes_left for us.  */
-      next_width = cpp_wcwidth (c);
+      next_width = m_policy.m_width_cb (c);
+      if (out)
+	{
+	  out->m_ch = c;
+	  out->m_valid_ch = true;
+	}
     }
+
+  if (out)
+    out->m_next_byte = m_next;
 
   m_display_cols += next_width;
   return next_width;
@@ -2344,7 +2432,7 @@ cpp_display_width_computation::advance_display_cols (int n)
   const int start = m_display_cols;
   const int target = start + n;
   while (m_display_cols < target && !done ())
-    process_next_codepoint ();
+    process_next_codepoint (NULL);
   return m_display_cols - start;
 }
 
@@ -2352,29 +2440,33 @@ cpp_display_width_computation::advance_display_cols (int n)
     how many display columns are occupied by the first COLUMN bytes.  COLUMN
     may exceed DATA_LENGTH, in which case the phantom bytes at the end are
     treated as if they have display width 1.  Tabs are expanded to the next tab
-    stop, relative to the start of DATA.  */
+    stop, relative to the start of DATA, and non-printable-ASCII characters
+    will be escaped as per POLICY.  */
 
 int
 cpp_byte_column_to_display_column (const char *data, int data_length,
-				   int column, int tabstop)
+				   int column,
+				   const cpp_char_column_policy &policy)
 {
   const int offset = MAX (0, column - data_length);
-  cpp_display_width_computation dw (data, column - offset, tabstop);
+  cpp_display_width_computation dw (data, column - offset, policy);
   while (!dw.done ())
-    dw.process_next_codepoint ();
+    dw.process_next_codepoint (NULL);
   return dw.display_cols_processed () + offset;
 }
 
 /*  For the string of length DATA_LENGTH bytes that begins at DATA, compute
     the least number of bytes that will result in at least DISPLAY_COL display
     columns.  The return value may exceed DATA_LENGTH if the entire string does
-    not occupy enough display columns.  */
+    not occupy enough display columns.  Non-printable-ASCII characters
+    will be escaped as per POLICY.  */
 
 int
 cpp_display_column_to_byte_column (const char *data, int data_length,
-				   int display_col, int tabstop)
+				   int display_col,
+				   const cpp_char_column_policy &policy)
 {
-  cpp_display_width_computation dw (data, data_length, tabstop);
+  cpp_display_width_computation dw (data, data_length, policy);
   const int avail_display = dw.advance_display_cols (display_col);
   return dw.bytes_processed () + MAX (0, display_col - avail_display);
 }

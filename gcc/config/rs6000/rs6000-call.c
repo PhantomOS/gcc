@@ -69,6 +69,7 @@
 #include "opts.h"
 
 #include "rs6000-internal.h"
+#include "rs6000-builtins.h"
 
 #if TARGET_MACHO
 #include "gstab.h"  /* for N_SLINE */
@@ -189,6 +190,8 @@ static tree builtin_function_type (machine_mode, machine_mode,
 static void rs6000_common_init_builtins (void);
 static void htm_init_builtins (void);
 static void mma_init_builtins (void);
+static rtx rs6000_expand_new_builtin (tree, rtx, rtx, machine_mode, int);
+static bool rs6000_gimple_fold_new_builtin (gimple_stmt_iterator *gsi);
 
 
 /* Hash table to keep track of the argument types for builtin functions.  */
@@ -843,6 +846,10 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_bool_V2DI, RS6000_BTI_V2DI, RS6000_BTI_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPEQ, P8V_BUILTIN_VCMPEQUD,
     RS6000_BTI_bool_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPEQ, P10V_BUILTIN_VCMPEQUT,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPEQ, P10V_BUILTIN_VCMPEQUT,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPEQ, ALTIVEC_BUILTIN_VCMPEQFP,
     RS6000_BTI_bool_V4SI, RS6000_BTI_V4SF, RS6000_BTI_V4SF, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPEQ, VSX_BUILTIN_XVCMPEQDP,
@@ -889,6 +896,12 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { ALTIVEC_BUILTIN_VEC_CMPGE, VSX_BUILTIN_CMPGE_U2DI,
     RS6000_BTI_bool_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0},
+
+  { ALTIVEC_BUILTIN_VEC_CMPGE, P10V_BUILTIN_CMPGE_1TI,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0},
+  { ALTIVEC_BUILTIN_VEC_CMPGE, P10V_BUILTIN_CMPGE_U1TI,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0},
   { ALTIVEC_BUILTIN_VEC_CMPGT, ALTIVEC_BUILTIN_VCMPGTUB,
     RS6000_BTI_bool_V16QI, RS6000_BTI_unsigned_V16QI, RS6000_BTI_unsigned_V16QI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPGT, ALTIVEC_BUILTIN_VCMPGTSB,
@@ -903,8 +916,12 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_bool_V4SI, RS6000_BTI_V4SI, RS6000_BTI_V4SI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPGT, P8V_BUILTIN_VCMPGTUD,
     RS6000_BTI_bool_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPGT, P10V_BUILTIN_VCMPGTUT,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPGT, P8V_BUILTIN_VCMPGTSD,
     RS6000_BTI_bool_V2DI, RS6000_BTI_V2DI, RS6000_BTI_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPGT, P10V_BUILTIN_VCMPGTST,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPGT, ALTIVEC_BUILTIN_VCMPGTFP,
     RS6000_BTI_bool_V4SI, RS6000_BTI_V4SF, RS6000_BTI_V4SF, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPGT, VSX_BUILTIN_XVCMPGTDP,
@@ -947,6 +964,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { ALTIVEC_BUILTIN_VEC_CMPLE, VSX_BUILTIN_CMPLE_U2DI,
     RS6000_BTI_bool_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0},
+  { ALTIVEC_BUILTIN_VEC_CMPLE, P10V_BUILTIN_CMPLE_1TI,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0},
+  { ALTIVEC_BUILTIN_VEC_CMPLE, P10V_BUILTIN_CMPLE_U1TI,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0},
   { ALTIVEC_BUILTIN_VEC_CMPLT, ALTIVEC_BUILTIN_VCMPGTUB,
     RS6000_BTI_bool_V16QI, RS6000_BTI_unsigned_V16QI, RS6000_BTI_unsigned_V16QI, 0 },
   { ALTIVEC_BUILTIN_VEC_CMPLT, ALTIVEC_BUILTIN_VCMPGTSB,
@@ -1086,6 +1108,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { VSX_BUILTIN_VEC_DIV, P10V_BUILTIN_DIVU_V2DI,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0 },
+  { VSX_BUILTIN_VEC_DIV, P10V_BUILTIN_DIV_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { VSX_BUILTIN_VEC_DIV, P10V_BUILTIN_UDIV_V1TI,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
 
   { P10_BUILTIN_VEC_DIVE, P10V_BUILTIN_DIVES_V4SI,
     RS6000_BTI_V4SI, RS6000_BTI_V4SI, RS6000_BTI_V4SI, 0 },
@@ -1097,6 +1124,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { P10_BUILTIN_VEC_DIVE, P10V_BUILTIN_DIVEU_V2DI,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0 },
+  { P10_BUILTIN_VEC_DIVE, P10V_BUILTIN_DIVES_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { P10_BUILTIN_VEC_DIVE, P10V_BUILTIN_DIVEU_V1TI,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
 
   { P10_BUILTIN_VEC_MOD, P10V_BUILTIN_MODS_V4SI,
     RS6000_BTI_V4SI, RS6000_BTI_V4SI, RS6000_BTI_V4SI, 0 },
@@ -1108,6 +1140,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { P10_BUILTIN_VEC_MOD, P10V_BUILTIN_MODU_V2DI,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0 },
+  { P10_BUILTIN_VEC_MOD, P10V_BUILTIN_MODS_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { P10_BUILTIN_VEC_MOD, P10V_BUILTIN_MODU_V1TI,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
 
   { VSX_BUILTIN_VEC_DOUBLE, VSX_BUILTIN_XVCVSXDDP,
     RS6000_BTI_V2DF, RS6000_BTI_V2DI, 0, 0 },
@@ -1973,6 +2010,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { ALTIVEC_BUILTIN_VEC_MULE, P8V_BUILTIN_VMULEUW,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V4SI,
     RS6000_BTI_unsigned_V4SI, 0 },
+  { ALTIVEC_BUILTIN_VEC_MULE, P10V_BUILTIN_VMULESD,
+    RS6000_BTI_V1TI, RS6000_BTI_V2DI, RS6000_BTI_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_MULE, P10V_BUILTIN_VMULEUD,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V2DI,
+    RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_VMULEUB, ALTIVEC_BUILTIN_VMULEUB,
     RS6000_BTI_unsigned_V8HI, RS6000_BTI_unsigned_V16QI, RS6000_BTI_unsigned_V16QI, 0 },
   { ALTIVEC_BUILTIN_VEC_VMULESB, ALTIVEC_BUILTIN_VMULESB,
@@ -1996,6 +2038,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { ALTIVEC_BUILTIN_VEC_MULO, P8V_BUILTIN_VMULOUW,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V4SI,
     RS6000_BTI_unsigned_V4SI, 0 },
+  { ALTIVEC_BUILTIN_VEC_MULO, P10V_BUILTIN_VMULOSD,
+    RS6000_BTI_V1TI, RS6000_BTI_V2DI, RS6000_BTI_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_MULO, P10V_BUILTIN_VMULOUD,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V2DI,
+    RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_MULO, ALTIVEC_BUILTIN_VMULOSH,
     RS6000_BTI_V4SI, RS6000_BTI_V8HI, RS6000_BTI_V8HI, 0 },
   { ALTIVEC_BUILTIN_VEC_VMULOSH, ALTIVEC_BUILTIN_VMULOSH,
@@ -2038,6 +2085,16 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_V2DI, RS6000_BTI_V2DI, RS6000_BTI_bool_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_NOR, ALTIVEC_BUILTIN_VNOR_V2DI,
     RS6000_BTI_V2DI, RS6000_BTI_bool_V2DI, RS6000_BTI_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_NOR, P10V_BUILTIN_VNOR_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_bool_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_NOR, P10V_BUILTIN_VNOR_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_NOR, P10V_BUILTIN_VNOR_V1TI_UNS,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_NOR, P10V_BUILTIN_VNOR_V1TI_UNS,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_bool_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_NOR, P10V_BUILTIN_VNOR_V1TI_UNS,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_NOR, ALTIVEC_BUILTIN_VNOR_V2DI_UNS,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_NOR, ALTIVEC_BUILTIN_VNOR_V2DI_UNS,
@@ -2299,6 +2356,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_V2DI, RS6000_BTI_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_RL, P8V_BUILTIN_VRLD,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_RL, P10V_BUILTIN_VRLQ,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_RL, P10V_BUILTIN_VRLQ,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_VRLW, ALTIVEC_BUILTIN_VRLW,
     RS6000_BTI_V4SI, RS6000_BTI_V4SI, RS6000_BTI_unsigned_V4SI, 0 },
   { ALTIVEC_BUILTIN_VEC_VRLW, ALTIVEC_BUILTIN_VRLW,
@@ -2317,12 +2379,23 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { P9V_BUILTIN_VEC_RLMI, P9V_BUILTIN_VRLDMI,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI },
+  { P9V_BUILTIN_VEC_RLMI, P10V_BUILTIN_VRLQMI,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI,
+    RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI },
+  { P9V_BUILTIN_VEC_RLMI, P10V_BUILTIN_VRLQMI,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI },
   { P9V_BUILTIN_VEC_RLNM, P9V_BUILTIN_VRLWNM,
     RS6000_BTI_unsigned_V4SI, RS6000_BTI_unsigned_V4SI,
     RS6000_BTI_unsigned_V4SI, 0 },
   { P9V_BUILTIN_VEC_RLNM, P9V_BUILTIN_VRLDNM,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_unsigned_V2DI, 0 },
+  { P9V_BUILTIN_VEC_RLNM, P10V_BUILTIN_VRLQNM,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
+  { P9V_BUILTIN_VEC_RLNM, P10V_BUILTIN_VRLQNM,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_SL, ALTIVEC_BUILTIN_VSLB,
     RS6000_BTI_V16QI, RS6000_BTI_V16QI, RS6000_BTI_unsigned_V16QI, 0 },
   { ALTIVEC_BUILTIN_VEC_SL, ALTIVEC_BUILTIN_VSLB,
@@ -2339,6 +2412,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_V2DI, RS6000_BTI_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_SL, P8V_BUILTIN_VSLD,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SL, P10V_BUILTIN_VSLQ,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SL, P10V_BUILTIN_VSLQ,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_SQRT, VSX_BUILTIN_XVSQRTDP,
     RS6000_BTI_V2DF, RS6000_BTI_V2DF, 0, 0 },
   { ALTIVEC_BUILTIN_VEC_SQRT, VSX_BUILTIN_XVSQRTSP,
@@ -2535,6 +2613,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_V2DI, RS6000_BTI_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_SR, P8V_BUILTIN_VSRD,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SR, P10V_BUILTIN_VSRQ,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SR, P10V_BUILTIN_VSRQ,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_VSRW, ALTIVEC_BUILTIN_VSRW,
     RS6000_BTI_V4SI, RS6000_BTI_V4SI, RS6000_BTI_unsigned_V4SI, 0 },
   { ALTIVEC_BUILTIN_VEC_VSRW, ALTIVEC_BUILTIN_VSRW,
@@ -2563,6 +2646,11 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_V2DI, RS6000_BTI_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
   { ALTIVEC_BUILTIN_VEC_SRA, P8V_BUILTIN_VSRAD,
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SRA, P10V_BUILTIN_VSRAQ,
+    RS6000_BTI_V1TI, RS6000_BTI_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_SRA, P10V_BUILTIN_VSRAQ,
+    RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
   { ALTIVEC_BUILTIN_VEC_VSRAW, ALTIVEC_BUILTIN_VSRAW,
     RS6000_BTI_V4SI, RS6000_BTI_V4SI, RS6000_BTI_unsigned_V4SI, 0 },
   { ALTIVEC_BUILTIN_VEC_VSRAW, ALTIVEC_BUILTIN_VSRAW,
@@ -4180,12 +4268,16 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_bool_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P8V_BUILTIN_VCMPGTUD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI },
+  { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P10V_BUILTIN_VCMPGTUT_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_bool_V2DI, RS6000_BTI_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V2DI, RS6000_BTI_bool_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V2DI, RS6000_BTI_V2DI },
+  { ALTIVEC_BUILTIN_VEC_VCMPGT_P, P10V_BUILTIN_VCMPGTST_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V1TI, RS6000_BTI_V1TI },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, ALTIVEC_BUILTIN_VCMPGTFP_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V4SF, RS6000_BTI_V4SF },
   { ALTIVEC_BUILTIN_VEC_VCMPGT_P, VSX_BUILTIN_XVCMPGTDP_P,
@@ -4250,6 +4342,10 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V2DI, RS6000_BTI_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPEQ_P, P8V_BUILTIN_VCMPEQUD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_bool_V2DI, RS6000_BTI_bool_V2DI },
+  { ALTIVEC_BUILTIN_VEC_VCMPEQ_P, P10V_BUILTIN_VCMPEQUT_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V1TI, RS6000_BTI_V1TI },
+  { ALTIVEC_BUILTIN_VEC_VCMPEQ_P, P10V_BUILTIN_VCMPEQUT_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI },
   { ALTIVEC_BUILTIN_VEC_VCMPEQ_P, ALTIVEC_BUILTIN_VCMPEQFP_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V4SF, RS6000_BTI_V4SF },
   { ALTIVEC_BUILTIN_VEC_VCMPEQ_P, VSX_BUILTIN_XVCMPEQDP_P,
@@ -4301,12 +4397,16 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_bool_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P8V_BUILTIN_VCMPGTUD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI },
+  { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P10V_BUILTIN_VCMPGTUT_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_bool_V2DI, RS6000_BTI_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V2DI, RS6000_BTI_bool_V2DI },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P8V_BUILTIN_VCMPGTSD_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V2DI, RS6000_BTI_V2DI },
+  { ALTIVEC_BUILTIN_VEC_VCMPGE_P, P10V_BUILTIN_VCMPGTST_P,
+    RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V1TI, RS6000_BTI_V1TI },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, ALTIVEC_BUILTIN_VCMPGEFP_P,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI, RS6000_BTI_V4SF, RS6000_BTI_V4SF },
   { ALTIVEC_BUILTIN_VEC_VCMPGE_P, VSX_BUILTIN_XVCMPGEDP_P,
@@ -4955,6 +5055,12 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { ALTIVEC_BUILTIN_VEC_CMPNE, P9V_BUILTIN_CMPNEW,
     RS6000_BTI_bool_V4SI, RS6000_BTI_unsigned_V4SI,
     RS6000_BTI_unsigned_V4SI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPNE, P10V_BUILTIN_CMPNET,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_V1TI,
+    RS6000_BTI_V1TI, 0 },
+  { ALTIVEC_BUILTIN_VEC_CMPNE, P10V_BUILTIN_CMPNET,
+    RS6000_BTI_bool_V1TI, RS6000_BTI_unsigned_V1TI,
+    RS6000_BTI_unsigned_V1TI, 0 },
 
   /* The following 2 entries have been deprecated.  */
   { P9V_BUILTIN_VEC_VCMPNE_P, P9V_BUILTIN_VCMPNEB_P,
@@ -5055,6 +5161,10 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { P9V_BUILTIN_VEC_VCMPNE_P, P9V_BUILTIN_VCMPNED_P,
     RS6000_BTI_INTSI, RS6000_BTI_bool_V2DI,
     RS6000_BTI_bool_V2DI, 0 },
+  { P9V_BUILTIN_VEC_VCMPNE_P, P10V_BUILTIN_VCMPNET_P,
+    RS6000_BTI_INTSI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { P9V_BUILTIN_VEC_VCMPNE_P, P10V_BUILTIN_VCMPNET_P,
+    RS6000_BTI_INTSI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
 
   { P9V_BUILTIN_VEC_VCMPNE_P, P9V_BUILTIN_VCMPNEFP_P,
     RS6000_BTI_INTSI, RS6000_BTI_V4SF, RS6000_BTI_V4SF, 0 },
@@ -5160,7 +5270,10 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
   { P9V_BUILTIN_VEC_VCMPAE_P, P9V_BUILTIN_VCMPAED_P,
     RS6000_BTI_INTSI, RS6000_BTI_bool_V2DI,
     RS6000_BTI_bool_V2DI, 0 },
-
+  { P9V_BUILTIN_VEC_VCMPAE_P, P10V_BUILTIN_VCMPAET_P,
+    RS6000_BTI_INTSI, RS6000_BTI_V1TI, RS6000_BTI_V1TI, 0 },
+  { P9V_BUILTIN_VEC_VCMPAE_P, P10V_BUILTIN_VCMPAET_P,
+    RS6000_BTI_INTSI, RS6000_BTI_unsigned_V1TI, RS6000_BTI_unsigned_V1TI, 0 },
   { P9V_BUILTIN_VEC_VCMPAE_P, P9V_BUILTIN_VCMPAEFP_P,
     RS6000_BTI_INTSI, RS6000_BTI_V4SF, RS6000_BTI_V4SF, 0 },
   { P9V_BUILTIN_VEC_VCMPAE_P, P9V_BUILTIN_VCMPAEDP_P,
@@ -5711,6 +5824,19 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
     RS6000_BTI_unsigned_V2DI, RS6000_BTI_unsigned_V2DI,
     RS6000_BTI_INTSI, RS6000_BTI_INTSI },
 
+  /* Sign extend builtins that work work on ISA 3.0, not added until ISA 3.1 */
+  { P9V_BUILTIN_VEC_VSIGNEXTI, P9V_BUILTIN_VSIGNEXTSB2W,
+    RS6000_BTI_V4SI, RS6000_BTI_V16QI, 0, 0 },
+  { P9V_BUILTIN_VEC_VSIGNEXTI, P9V_BUILTIN_VSIGNEXTSH2W,
+    RS6000_BTI_V4SI, RS6000_BTI_V8HI, 0, 0 },
+
+  { P9V_BUILTIN_VEC_VSIGNEXTLL, P9V_BUILTIN_VSIGNEXTSB2D,
+    RS6000_BTI_V2DI, RS6000_BTI_V16QI, 0, 0 },
+  { P9V_BUILTIN_VEC_VSIGNEXTLL, P9V_BUILTIN_VSIGNEXTSH2D,
+    RS6000_BTI_V2DI, RS6000_BTI_V8HI, 0, 0 },
+  { P9V_BUILTIN_VEC_VSIGNEXTLL, P9V_BUILTIN_VSIGNEXTSW2D,
+    RS6000_BTI_V2DI, RS6000_BTI_V4SI, 0, 0 },
+
   /* Overloaded built-in functions for ISA3.1 (power10). */
   { P10_BUILTIN_VEC_CLRL, P10V_BUILTIN_VCLRLB,
     RS6000_BTI_V16QI, RS6000_BTI_V16QI, RS6000_BTI_UINTSI, 0 },
@@ -6074,6 +6200,9 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
  { P10_BUILTIN_VEC_XVTLSBB_ONES, P10V_BUILTIN_XVTLSBB_ONES,
     RS6000_BTI_INTSI, RS6000_BTI_unsigned_V16QI, 0, 0 },
 
+  { P10_BUILTIN_VEC_SIGNEXT, P10V_BUILTIN_VSIGNEXTSD2Q,
+     RS6000_BTI_V1TI, RS6000_BTI_V2DI, 0, 0 },
+
   { RS6000_BUILTIN_NONE, RS6000_BUILTIN_NONE, 0, 0, 0, 0 }
 };
 
@@ -6095,11 +6224,19 @@ const struct altivec_builtin_types altivec_overloaded_builtins[] = {
    or vector type.  If a non-floating point or vector type is found, or
    if a floating point or vector type that doesn't match a non-VOIDmode
    *MODEP is found, then return -1, otherwise return the count in the
-   sub-tree.  */
+   sub-tree.
+
+   There have been some ABI snafus along the way with C++.  Modify
+   EMPTY_BASE_SEEN to a nonzero value iff a C++ empty base class makes
+   an appearance; separate flag bits indicate whether or not such a
+   field is marked "no unique address".  Modify ZERO_WIDTH_BF_SEEN
+   to 1 iff a C++ zero-length bitfield makes an appearance, but
+   in this case otherwise treat this as still being a homogeneous
+   aggregate.  */
 
 static int
 rs6000_aggregate_candidate (const_tree type, machine_mode *modep,
-			    int *empty_base_seen)
+			    int *empty_base_seen, int *zero_width_bf_seen)
 {
   machine_mode mode;
   HOST_WIDE_INT size;
@@ -6170,7 +6307,8 @@ rs6000_aggregate_candidate (const_tree type, machine_mode *modep,
 	  return -1;
 
 	count = rs6000_aggregate_candidate (TREE_TYPE (type), modep,
-					    empty_base_seen);
+					    empty_base_seen,
+					    zero_width_bf_seen);
 	if (count == -1
 	    || !index
 	    || !TYPE_MAX_VALUE (index)
@@ -6208,6 +6346,26 @@ rs6000_aggregate_candidate (const_tree type, machine_mode *modep,
 	    if (TREE_CODE (field) != FIELD_DECL)
 	      continue;
 
+	    if (DECL_FIELD_CXX_ZERO_WIDTH_BIT_FIELD (field))
+	      {
+		/* GCC 11 and earlier generated incorrect code in a rare
+		   corner case for C++.  When a RECORD_TYPE looks like a
+		   homogeneous aggregate, except that it also contains
+		   one or more zero-width bit fields, these earlier
+		   compilers would incorrectly pass the fields in FPRs
+		   or VSRs.  This occurred because the front end wrongly
+		   removed these bitfields from the RECORD_TYPE.  In
+		   GCC 12 and later, the front end flaw was corrected.
+		   We want to diagnose this case.  To do this, we pretend
+		   that we don't see the zero-width bit fields (hence
+		   the continue statement here), but pass back a flag
+		   indicating what happened.  The caller then diagnoses
+		   the issue and rejects the RECORD_TYPE as a homogeneous
+		   aggregate.  */
+		*zero_width_bf_seen = 1;
+		continue;
+	      }
+
 	    if (DECL_FIELD_ABI_IGNORED (field))
 	      {
 		if (lookup_attribute ("no_unique_address",
@@ -6219,7 +6377,8 @@ rs6000_aggregate_candidate (const_tree type, machine_mode *modep,
 	      }
 
 	    sub_count = rs6000_aggregate_candidate (TREE_TYPE (field), modep,
-						    empty_base_seen);
+						    empty_base_seen,
+						    zero_width_bf_seen);
 	    if (sub_count < 0)
 	      return -1;
 	    count += sub_count;
@@ -6253,7 +6412,8 @@ rs6000_aggregate_candidate (const_tree type, machine_mode *modep,
 	      continue;
 
 	    sub_count = rs6000_aggregate_candidate (TREE_TYPE (field), modep,
-						    empty_base_seen);
+						    empty_base_seen,
+						    zero_width_bf_seen);
 	    if (sub_count < 0)
 	      return -1;
 	    count = count > sub_count ? count : sub_count;
@@ -6295,8 +6455,10 @@ rs6000_discover_homogeneous_aggregate (machine_mode mode, const_tree type,
     {
       machine_mode field_mode = VOIDmode;
       int empty_base_seen = 0;
+      int zero_width_bf_seen = 0;
       int field_count = rs6000_aggregate_candidate (type, &field_mode,
-						    &empty_base_seen);
+						    &empty_base_seen,
+						    &zero_width_bf_seen);
 
       if (field_count > 0)
 	{
@@ -6331,6 +6493,25 @@ rs6000_discover_homogeneous_aggregate (machine_mode mode, const_tree type,
 				"changed %{in GCC 10.1%}", type, url);
 		      last_reported_type_uid = uid;
 		    }
+		}
+	      if (zero_width_bf_seen && warn_psabi)
+		{
+		  static unsigned last_reported_type_uid;
+		  unsigned uid = TYPE_UID (TYPE_MAIN_VARIANT (type));
+		  if (uid != last_reported_type_uid)
+		    {
+		      inform (input_location,
+			      "ELFv2 parameter passing for an argument "
+			      "containing zero-width bit fields but that is "
+			      "otherwise a homogeneous aggregate was "
+			      "corrected in GCC 12");
+		      last_reported_type_uid = uid;
+		    }
+		  if (elt_mode)
+		    *elt_mode = mode;
+		  if (n_elts)
+		    *n_elts = 1;
+		  return false;
 		}
 	      return true;
 	    }
@@ -6646,7 +6827,9 @@ rs6000_promote_function_mode (const_tree type ATTRIBUTE_UNUSED,
 			      int *punsignedp ATTRIBUTE_UNUSED,
 			      const_tree, int for_return ATTRIBUTE_UNUSED)
 {
-  PROMOTE_MODE (mode, *punsignedp, type);
+  if (GET_MODE_CLASS (mode) == MODE_INT
+      && GET_MODE_SIZE (mode) < (TARGET_32BIT ? 4 : 8))
+    mode = TARGET_32BIT ? SImode : DImode;
 
   return mode;
 }
@@ -8747,7 +8930,105 @@ rs6000_gimplify_va_arg (tree valist, tree type, gimple_seq *pre_p,
   return build_va_arg_indirect_ref (addr);
 }
 
-/* Builtins.  */
+/* Debug utility to translate a type node to a single textual token.  */
+static
+const char *rs6000_type_string (tree type_node)
+{
+  if (type_node == void_type_node)
+    return "void";
+  else if (type_node == long_integer_type_node)
+    return "long";
+  else if (type_node == long_unsigned_type_node)
+    return "ulong";
+  else if (type_node == long_long_integer_type_node)
+    return "longlong";
+  else if (type_node == long_long_unsigned_type_node)
+    return "ulonglong";
+  else if (type_node == bool_V2DI_type_node)
+    return "vbll";
+  else if (type_node == bool_V4SI_type_node)
+    return "vbi";
+  else if (type_node == bool_V8HI_type_node)
+    return "vbs";
+  else if (type_node == bool_V16QI_type_node)
+    return "vbc";
+  else if (type_node == bool_int_type_node)
+    return "bool";
+  else if (type_node == dfloat64_type_node)
+    return "_Decimal64";
+  else if (type_node == double_type_node)
+    return "double";
+  else if (type_node == intDI_type_node)
+    return "sll";
+  else if (type_node == intHI_type_node)
+    return "ss";
+  else if (type_node == ibm128_float_type_node)
+    return "__ibm128";
+  else if (type_node == opaque_V4SI_type_node)
+    return "opaque";
+  else if (POINTER_TYPE_P (type_node))
+    return "void*";
+  else if (type_node == intQI_type_node || type_node == char_type_node)
+    return "sc";
+  else if (type_node == dfloat32_type_node)
+    return "_Decimal32";
+  else if (type_node == float_type_node)
+    return "float";
+  else if (type_node == intSI_type_node || type_node == integer_type_node)
+    return "si";
+  else if (type_node == dfloat128_type_node)
+    return "_Decimal128";
+  else if (type_node == long_double_type_node)
+    return "longdouble";
+  else if (type_node == intTI_type_node)
+    return "sq";
+  else if (type_node == unsigned_intDI_type_node)
+    return "ull";
+  else if (type_node == unsigned_intHI_type_node)
+    return "us";
+  else if (type_node == unsigned_intQI_type_node)
+    return "uc";
+  else if (type_node == unsigned_intSI_type_node)
+    return "ui";
+  else if (type_node == unsigned_intTI_type_node)
+    return "uq";
+  else if (type_node == unsigned_V1TI_type_node)
+    return "vuq";
+  else if (type_node == unsigned_V2DI_type_node)
+    return "vull";
+  else if (type_node == unsigned_V4SI_type_node)
+    return "vui";
+  else if (type_node == unsigned_V8HI_type_node)
+    return "vus";
+  else if (type_node == unsigned_V16QI_type_node)
+    return "vuc";
+  else if (type_node == V16QI_type_node)
+    return "vsc";
+  else if (type_node == V1TI_type_node)
+    return "vsq";
+  else if (type_node == V2DF_type_node)
+    return "vd";
+  else if (type_node == V2DI_type_node)
+    return "vsll";
+  else if (type_node == V4SF_type_node)
+    return "vf";
+  else if (type_node == V4SI_type_node)
+    return "vsi";
+  else if (type_node == V8HI_type_node)
+    return "vss";
+  else if (type_node == pixel_V8HI_type_node)
+    return "vp";
+  else if (type_node == pcvoid_type_node)
+    return "voidc*";
+  else if (type_node == float128_type_node)
+    return "_Float128";
+  else if (type_node == vector_pair_type_node)
+    return "__vector_pair";
+  else if (type_node == vector_quad_type_node)
+    return "__vector_quad";
+
+  return "unknown";
+}
 
 static void
 def_builtin (const char *name, tree type, enum rs6000_builtins code)
@@ -8777,7 +9058,7 @@ def_builtin (const char *name, tree type, enum rs6000_builtins code)
       /* const function, function only depends on the inputs.  */
       TREE_READONLY (t) = 1;
       TREE_NOTHROW (t) = 1;
-      attr_string = ", const";
+      attr_string = "= const";
     }
   else if ((classify & RS6000_BTC_PURE) != 0)
     {
@@ -8785,7 +9066,7 @@ def_builtin (const char *name, tree type, enum rs6000_builtins code)
 	 external state.  */
       DECL_PURE_P (t) = 1;
       TREE_NOTHROW (t) = 1;
-      attr_string = ", pure";
+      attr_string = "= pure";
     }
   else if ((classify & RS6000_BTC_FP) != 0)
     {
@@ -8799,12 +9080,12 @@ def_builtin (const char *name, tree type, enum rs6000_builtins code)
 	{
 	  DECL_PURE_P (t) = 1;
 	  DECL_IS_NOVOPS (t) = 1;
-	  attr_string = ", fp, pure";
+	  attr_string = "= fp, pure";
 	}
       else
 	{
 	  TREE_READONLY (t) = 1;
-	  attr_string = ", fp, const";
+	  attr_string = "= fp, const";
 	}
     }
   else if ((classify & (RS6000_BTC_QUAD | RS6000_BTC_PAIR)) != 0)
@@ -8814,8 +9095,22 @@ def_builtin (const char *name, tree type, enum rs6000_builtins code)
     gcc_unreachable ();
 
   if (TARGET_DEBUG_BUILTIN)
-    fprintf (stderr, "rs6000_builtin, code = %4d, %s%s\n",
-	     (int)code, name, attr_string);
+    {
+      tree t = TREE_TYPE (type);
+      fprintf (stderr, "%s %s (", rs6000_type_string (t), name);
+      t = TYPE_ARG_TYPES (type);
+      gcc_assert (t);
+
+      while (TREE_VALUE (t) != void_type_node)
+	{
+	  fprintf (stderr, "%s", rs6000_type_string (TREE_VALUE (t)));
+	  t = TREE_CHAIN (t);
+	  gcc_assert (t);
+	  if (TREE_VALUE (t) != void_type_node)
+	    fprintf (stderr, ", ");
+	}
+      fprintf (stderr, "); %s [%4d]\n", attr_string, (int) code);
+    }
 }
 
 static const struct builtin_compatibility bdesc_compat[] =
@@ -9777,7 +10072,7 @@ altivec_expand_lxvr_builtin (enum insn_code icode, tree exp, rtx target, bool bl
 
   if (sign_extend)
     {
-      rtx discratch = gen_reg_rtx (DImode);
+      rtx discratch = gen_reg_rtx (V2DImode);
       rtx tiscratch = gen_reg_rtx (TImode);
 
       /* Emit the lxvr*x insn.  */
@@ -9786,20 +10081,31 @@ altivec_expand_lxvr_builtin (enum insn_code icode, tree exp, rtx target, bool bl
 	return 0;
       emit_insn (pat);
 
-      /* Emit a sign extension from QI,HI,WI to double (DI).  */
-      rtx scratch = gen_lowpart (smode, tiscratch);
+      /* Emit a sign extension from V16QI,V8HI,V4SI to V2DI.  */
+      rtx temp1, temp2;
       if (icode == CODE_FOR_vsx_lxvrbx)
-	emit_insn (gen_extendqidi2 (discratch, scratch));
+	{
+	  temp1  = simplify_gen_subreg (V16QImode, tiscratch, TImode, 0);
+	  emit_insn (gen_vsx_sign_extend_qi_v2di (discratch, temp1));
+	}
       else if (icode == CODE_FOR_vsx_lxvrhx)
-	emit_insn (gen_extendhidi2 (discratch, scratch));
+	{
+	  temp1  = simplify_gen_subreg (V8HImode, tiscratch, TImode, 0);
+	  emit_insn (gen_vsx_sign_extend_hi_v2di (discratch, temp1));
+	}
       else if (icode == CODE_FOR_vsx_lxvrwx)
-	emit_insn (gen_extendsidi2 (discratch, scratch));
-      /*  Assign discratch directly if scratch is already DI.  */
-      if (icode == CODE_FOR_vsx_lxvrdx)
-	discratch = scratch;
+	{
+	  temp1  = simplify_gen_subreg (V4SImode, tiscratch, TImode, 0);
+	  emit_insn (gen_vsx_sign_extend_si_v2di (discratch, temp1));
+	}
+      else if (icode == CODE_FOR_vsx_lxvrdx)
+	discratch = simplify_gen_subreg (V2DImode, tiscratch, TImode, 0);
+      else
+	gcc_unreachable ();
 
-      /* Emit the sign extension from DI (double) to TI (quad).  */
-      emit_insn (gen_extendditi2 (target, discratch));
+      /* Emit the sign extension from V2DI (double) to TI (quad).  */
+      temp2 = simplify_gen_subreg (TImode, discratch, V2DImode, 0);
+      emit_insn (gen_extendditi2_vector (target, temp2));
 
       return target;
     }
@@ -10116,12 +10422,23 @@ mma_expand_builtin (tree exp, rtx target, bool *expandedp)
       pat = GEN_FCN (icode) (op[0], op[1]);
       break;
     case 3:
+      /* The ASSEMBLE builtin source operands are reversed in little-endian
+	 mode, so reorder them.  */
+      if (fcode == VSX_BUILTIN_ASSEMBLE_PAIR_INTERNAL && !WORDS_BIG_ENDIAN)
+	std::swap (op[1], op[2]);
       pat = GEN_FCN (icode) (op[0], op[1], op[2]);
       break;
     case 4:
       pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3]);
       break;
     case 5:
+      /* The ASSEMBLE builtin source operands are reversed in little-endian
+	 mode, so reorder them.  */
+      if (fcode == MMA_BUILTIN_ASSEMBLE_ACC_INTERNAL && !WORDS_BIG_ENDIAN)
+	{
+	  std::swap (op[1], op[4]);
+	  std::swap (op[2], op[3]);
+	}
       pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4]);
       break;
     case 6:
@@ -10969,6 +11286,45 @@ altivec_expand_vec_ext_builtin (tree exp, rtx target)
   return target;
 }
 
+/* Expand vec_sel builtin.  */
+static rtx
+altivec_expand_vec_sel_builtin (enum insn_code icode, tree exp, rtx target)
+{
+  rtx op0, op1, op2, pat;
+  tree arg0, arg1, arg2;
+
+  arg0 = CALL_EXPR_ARG (exp, 0);
+  op0 = expand_normal (arg0);
+  arg1 = CALL_EXPR_ARG (exp, 1);
+  op1 = expand_normal (arg1);
+  arg2 = CALL_EXPR_ARG (exp, 2);
+  op2 = expand_normal (arg2);
+
+  machine_mode tmode = insn_data[icode].operand[0].mode;
+  machine_mode mode0 = insn_data[icode].operand[1].mode;
+  machine_mode mode1 = insn_data[icode].operand[2].mode;
+  machine_mode mode2 = insn_data[icode].operand[3].mode;
+
+  if (target == 0 || GET_MODE (target) != tmode
+      || !(*insn_data[icode].operand[0].predicate) (target, tmode))
+    target = gen_reg_rtx (tmode);
+
+  if (!(*insn_data[icode].operand[1].predicate) (op0, mode0))
+    op0 = copy_to_mode_reg (mode0, op0);
+  if (!(*insn_data[icode].operand[2].predicate) (op1, mode1))
+    op1 = copy_to_mode_reg (mode1, op1);
+  if (!(*insn_data[icode].operand[3].predicate) (op2, mode2))
+    op2 = copy_to_mode_reg (mode2, op2);
+
+  pat = GEN_FCN (icode) (target, op0, op1, op2, op2);
+  if (pat)
+    emit_insn (pat);
+  else
+    return NULL_RTX;
+
+  return target;
+}
+
 /* Expand the builtin in EXP and store the result in TARGET.  Store
    true in *EXPANDEDP if we found a builtin to expand.  */
 static rtx
@@ -11153,6 +11509,29 @@ altivec_expand_builtin (tree exp, rtx target, bool *expandedp)
       if (pat)
 	emit_insn (pat);
       return NULL_RTX;
+
+    case ALTIVEC_BUILTIN_VSEL_2DF:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv2df, exp,
+					     target);
+    case ALTIVEC_BUILTIN_VSEL_2DI:
+    case ALTIVEC_BUILTIN_VSEL_2DI_UNS:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv2di, exp,
+					     target);
+    case ALTIVEC_BUILTIN_VSEL_4SF:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv4sf, exp,
+					     target);
+    case ALTIVEC_BUILTIN_VSEL_4SI:
+    case ALTIVEC_BUILTIN_VSEL_4SI_UNS:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv4si, exp,
+					     target);
+    case ALTIVEC_BUILTIN_VSEL_8HI:
+    case ALTIVEC_BUILTIN_VSEL_8HI_UNS:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv8hi, exp,
+					     target);
+    case ALTIVEC_BUILTIN_VSEL_16QI:
+    case ALTIVEC_BUILTIN_VSEL_16QI_UNS:
+      return altivec_expand_vec_sel_builtin (CODE_FOR_altivec_vselv16qi, exp,
+					     target);
 
     case ALTIVEC_BUILTIN_DSSALL:
       emit_insn (gen_altivec_dssall ());
@@ -11523,6 +11902,83 @@ rs6000_invalid_builtin (enum rs6000_builtins fncode)
     error ("%qs is not supported with the current options", name);
 }
 
+/* Raise an error message for a builtin function that is called without the
+   appropriate target options being set.  */
+
+static void
+rs6000_invalid_new_builtin (enum rs6000_gen_builtins fncode)
+{
+  size_t j = (size_t) fncode;
+  const char *name = rs6000_builtin_info_x[j].bifname;
+
+  switch (rs6000_builtin_info_x[j].enable)
+    {
+    case ENB_P5:
+      error ("%qs requires the %qs option", name, "-mcpu=power5");
+      break;
+    case ENB_P6:
+      error ("%qs requires the %qs option", name, "-mcpu=power6");
+      break;
+    case ENB_ALTIVEC:
+      error ("%qs requires the %qs option", name, "-maltivec");
+      break;
+    case ENB_CELL:
+      error ("%qs requires the %qs option", name, "-mcpu=cell");
+      break;
+    case ENB_VSX:
+      error ("%qs requires the %qs option", name, "-mvsx");
+      break;
+    case ENB_P7:
+      error ("%qs requires the %qs option", name, "-mcpu=power7");
+      break;
+    case ENB_P7_64:
+      error ("%qs requires the %qs option and either the %qs or %qs option",
+	     name, "-mcpu=power7", "-m64", "-mpowerpc64");
+      break;
+    case ENB_P8:
+      error ("%qs requires the %qs option", name, "-mcpu=power8");
+      break;
+    case ENB_P8V:
+      error ("%qs requires the %qs option", name, "-mpower8-vector");
+      break;
+    case ENB_P9:
+      error ("%qs requires the %qs option", name, "-mcpu=power9");
+      break;
+    case ENB_P9_64:
+      error ("%qs requires the %qs option and either the %qs or %qs option",
+	     name, "-mcpu=power9", "-m64", "-mpowerpc64");
+      break;
+    case ENB_P9V:
+      error ("%qs requires the %qs option", name, "-mpower9-vector");
+      break;
+    case ENB_IEEE128_HW:
+      error ("%qs requires ISA 3.0 IEEE 128-bit floating point", name);
+      break;
+    case ENB_DFP:
+      error ("%qs requires the %qs option", name, "-mhard-dfp");
+      break;
+    case ENB_CRYPTO:
+      error ("%qs requires the %qs option", name, "-mcrypto");
+      break;
+    case ENB_HTM:
+      error ("%qs requires the %qs option", name, "-mhtm");
+      break;
+    case ENB_P10:
+      error ("%qs requires the %qs option", name, "-mcpu=power10");
+      break;
+    case ENB_P10_64:
+      error ("%qs requires the %qs option and either the %qs or %qs option",
+	     name, "-mcpu=power10", "-m64", "-mpowerpc64");
+      break;
+    case ENB_MMA:
+      error ("%qs requires the %qs option", name, "-mmma");
+      break;
+    default:
+    case ENB_ALWAYS:
+      gcc_unreachable ();
+    }
+}
+
 /* Target hook for early folding of built-ins, shamelessly stolen
    from ia64.c.  */
 
@@ -11724,7 +12180,7 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
       tree dst_ptr = gimple_call_arg (stmt, 0);
       tree src_ptr = gimple_call_arg (stmt, 1);
       tree src_type = TREE_TYPE (src_ptr);
-      tree src = make_ssa_name (TREE_TYPE (src_type));
+      tree src = create_tmp_reg_or_ssa_name (TREE_TYPE (src_type));
       gimplify_assign (src, build_simple_mem_ref (src_ptr), &new_seq);
 
       /* If we are not disassembling an accumulator/pair or our destination is
@@ -11748,7 +12204,7 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
 	{
 	  new_decl = rs6000_builtin_decls[MMA_BUILTIN_XXMFACC_INTERNAL];
 	  new_call = gimple_build_call (new_decl, 1, src);
-	  src = make_ssa_name (vector_quad_type_node);
+	  src = create_tmp_reg_or_ssa_name (vector_quad_type_node);
 	  gimple_call_set_lhs (new_call, src);
 	  gimple_seq_add_stmt (&new_seq, new_call);
 	}
@@ -11763,13 +12219,45 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
 	  unsigned index = WORDS_BIG_ENDIAN ? i : nvec - 1 - i;
 	  tree dst = build2 (MEM_REF, unsigned_V16QI_type_node, dst_base,
 			     build_int_cst (dst_type, index * 16));
-	  tree dstssa = make_ssa_name (unsigned_V16QI_type_node);
+	  tree dstssa = create_tmp_reg_or_ssa_name (unsigned_V16QI_type_node);
 	  new_call = gimple_build_call (new_decl, 2, src,
 					build_int_cstu (uint16_type_node, i));
 	  gimple_call_set_lhs (new_call, dstssa);
 	  gimple_seq_add_stmt (&new_seq, new_call);
 	  gimplify_assign (dst, dstssa, &new_seq);
 	}
+      pop_gimplify_context (NULL);
+      gsi_replace_with_seq (gsi, new_seq, true);
+      return true;
+    }
+  else if (fncode == VSX_BUILTIN_LXVP)
+    {
+      push_gimplify_context (true);
+      tree offset = gimple_call_arg (stmt, 0);
+      tree ptr = gimple_call_arg (stmt, 1);
+      tree lhs = gimple_call_lhs (stmt);
+      if (TREE_TYPE (TREE_TYPE (ptr)) != vector_pair_type_node)
+	ptr = build1 (VIEW_CONVERT_EXPR,
+		      build_pointer_type (vector_pair_type_node), ptr);
+      tree mem = build_simple_mem_ref (build2 (POINTER_PLUS_EXPR,
+					       TREE_TYPE (ptr), ptr, offset));
+      gimplify_assign (lhs, mem, &new_seq);
+      pop_gimplify_context (NULL);
+      gsi_replace_with_seq (gsi, new_seq, true);
+      return true;
+    }
+  else if (fncode == VSX_BUILTIN_STXVP)
+    {
+      push_gimplify_context (true);
+      tree src = gimple_call_arg (stmt, 0);
+      tree offset = gimple_call_arg (stmt, 1);
+      tree ptr = gimple_call_arg (stmt, 2);
+      if (TREE_TYPE (TREE_TYPE (ptr)) != vector_pair_type_node)
+	ptr = build1 (VIEW_CONVERT_EXPR,
+		      build_pointer_type (vector_pair_type_node), ptr);
+      tree mem = build_simple_mem_ref (build2 (POINTER_PLUS_EXPR,
+					       TREE_TYPE (ptr), ptr, offset));
+      gimplify_assign (mem, src, &new_seq);
       pop_gimplify_context (NULL);
       gsi_replace_with_seq (gsi, new_seq, true);
       return true;
@@ -11786,7 +12274,7 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
     {
       /* This built-in has a pass-by-reference accumulator input, so load it
 	 into a temporary accumulator for use as a pass-by-value input.  */
-      op[0] = make_ssa_name (vector_quad_type_node);
+      op[0] = create_tmp_reg_or_ssa_name (vector_quad_type_node);
       for (unsigned i = 1; i < nopnds; i++)
 	op[i] = gimple_call_arg (stmt, i);
       gimplify_assign (op[0], build_simple_mem_ref (acc), &new_seq);
@@ -11833,10 +12321,10 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
       gcc_unreachable ();
     }
 
-  if (fncode == VSX_BUILTIN_ASSEMBLE_PAIR)
-    lhs = make_ssa_name (vector_pair_type_node);
+  if (fncode == VSX_BUILTIN_BUILD_PAIR || fncode == VSX_BUILTIN_ASSEMBLE_PAIR)
+    lhs = create_tmp_reg_or_ssa_name (vector_pair_type_node);
   else
-    lhs = make_ssa_name (vector_quad_type_node);
+    lhs = create_tmp_reg_or_ssa_name (vector_quad_type_node);
   gimple_call_set_lhs (new_call, lhs);
   gimple_seq_add_stmt (&new_seq, new_call);
   gimplify_assign (build_simple_mem_ref (acc), lhs, &new_seq);
@@ -11852,6 +12340,9 @@ rs6000_gimple_fold_mma_builtin (gimple_stmt_iterator *gsi)
 bool
 rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
 {
+  if (new_builtins_are_live)
+    return rs6000_gimple_fold_new_builtin (gsi);
+
   gimple *stmt = gsi_stmt (*gsi);
   tree fndecl = gimple_call_fndecl (stmt);
   gcc_checking_assert (fndecl && DECL_BUILT_IN_CLASS (fndecl) == BUILT_IN_MD);
@@ -12157,6 +12648,14 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
       return true;
     /* flavors of vec_min.  */
     case VSX_BUILTIN_XVMINDP:
+    case ALTIVEC_BUILTIN_VMINFP:
+      {
+	lhs = gimple_call_lhs (stmt);
+	tree type = TREE_TYPE (lhs);
+	if (HONOR_NANS (type))
+	  return false;
+	gcc_fallthrough ();
+      }
     case P8V_BUILTIN_VMINSD:
     case P8V_BUILTIN_VMINUD:
     case ALTIVEC_BUILTIN_VMINSB:
@@ -12165,7 +12664,6 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case ALTIVEC_BUILTIN_VMINUB:
     case ALTIVEC_BUILTIN_VMINUH:
     case ALTIVEC_BUILTIN_VMINUW:
-    case ALTIVEC_BUILTIN_VMINFP:
       arg0 = gimple_call_arg (stmt, 0);
       arg1 = gimple_call_arg (stmt, 1);
       lhs = gimple_call_lhs (stmt);
@@ -12175,6 +12673,14 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
       return true;
     /* flavors of vec_max.  */
     case VSX_BUILTIN_XVMAXDP:
+    case ALTIVEC_BUILTIN_VMAXFP:
+      {
+	lhs = gimple_call_lhs (stmt);
+	tree type = TREE_TYPE (lhs);
+	if (HONOR_NANS (type))
+	  return false;
+	gcc_fallthrough ();
+      }
     case P8V_BUILTIN_VMAXSD:
     case P8V_BUILTIN_VMAXUD:
     case ALTIVEC_BUILTIN_VMAXSB:
@@ -12183,7 +12689,6 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case ALTIVEC_BUILTIN_VMAXUB:
     case ALTIVEC_BUILTIN_VMAXUH:
     case ALTIVEC_BUILTIN_VMAXUW:
-    case ALTIVEC_BUILTIN_VMAXFP:
       arg0 = gimple_call_arg (stmt, 0);
       arg1 = gimple_call_arg (stmt, 1);
       lhs = gimple_call_lhs (stmt);
@@ -12550,12 +13055,14 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case ALTIVEC_BUILTIN_VCMPEQUH:
     case ALTIVEC_BUILTIN_VCMPEQUW:
     case P8V_BUILTIN_VCMPEQUD:
+    case P10V_BUILTIN_VCMPEQUT:
       fold_compare_helper (gsi, EQ_EXPR, stmt);
       return true;
 
     case P9V_BUILTIN_CMPNEB:
     case P9V_BUILTIN_CMPNEH:
     case P9V_BUILTIN_CMPNEW:
+    case P10V_BUILTIN_CMPNET:
       fold_compare_helper (gsi, NE_EXPR, stmt);
       return true;
 
@@ -12567,6 +13074,8 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case VSX_BUILTIN_CMPGE_U4SI:
     case VSX_BUILTIN_CMPGE_2DI:
     case VSX_BUILTIN_CMPGE_U2DI:
+    case P10V_BUILTIN_CMPGE_1TI:
+    case P10V_BUILTIN_CMPGE_U1TI:
       fold_compare_helper (gsi, GE_EXPR, stmt);
       return true;
 
@@ -12578,6 +13087,8 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case ALTIVEC_BUILTIN_VCMPGTUW:
     case P8V_BUILTIN_VCMPGTUD:
     case P8V_BUILTIN_VCMPGTSD:
+    case P10V_BUILTIN_VCMPGTUT:
+    case P10V_BUILTIN_VCMPGTST:
       fold_compare_helper (gsi, GT_EXPR, stmt);
       return true;
 
@@ -12589,6 +13100,8 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case VSX_BUILTIN_CMPLE_U4SI:
     case VSX_BUILTIN_CMPLE_2DI:
     case VSX_BUILTIN_CMPLE_U2DI:
+    case P10V_BUILTIN_CMPLE_1TI:
+    case P10V_BUILTIN_CMPLE_U1TI:
       fold_compare_helper (gsi, LE_EXPR, stmt);
       return true;
 
@@ -12791,6 +13304,1271 @@ rs6000_gimple_fold_builtin (gimple_stmt_iterator *gsi)
   return false;
 }
 
+/*  Helper function to sort out which built-ins may be valid without having
+    a LHS.  */
+static bool
+rs6000_new_builtin_valid_without_lhs (enum rs6000_gen_builtins fn_code,
+				      tree fndecl)
+{
+  if (TREE_TYPE (TREE_TYPE (fndecl)) == void_type_node)
+    return true;
+
+  switch (fn_code)
+    {
+    case RS6000_BIF_STVX_V16QI:
+    case RS6000_BIF_STVX_V8HI:
+    case RS6000_BIF_STVX_V4SI:
+    case RS6000_BIF_STVX_V4SF:
+    case RS6000_BIF_STVX_V2DI:
+    case RS6000_BIF_STVX_V2DF:
+    case RS6000_BIF_STXVW4X_V16QI:
+    case RS6000_BIF_STXVW4X_V8HI:
+    case RS6000_BIF_STXVW4X_V4SF:
+    case RS6000_BIF_STXVW4X_V4SI:
+    case RS6000_BIF_STXVD2X_V2DF:
+    case RS6000_BIF_STXVD2X_V2DI:
+      return true;
+    default:
+      return false;
+    }
+}
+
+/* Check whether a builtin function is supported in this target
+   configuration.  */
+bool
+rs6000_new_builtin_is_supported (enum rs6000_gen_builtins fncode)
+{
+  switch (rs6000_builtin_info_x[(size_t) fncode].enable)
+    {
+    case ENB_ALWAYS:
+      return true;
+    case ENB_P5:
+      return TARGET_POPCNTB;
+    case ENB_P6:
+      return TARGET_CMPB;
+    case ENB_P7:
+      return TARGET_POPCNTD;
+    case ENB_P7_64:
+      return TARGET_POPCNTD && TARGET_POWERPC64;
+    case ENB_P8:
+      return TARGET_DIRECT_MOVE;
+    case ENB_P8V:
+      return TARGET_P8_VECTOR;
+    case ENB_P9:
+      return TARGET_MODULO;
+    case ENB_P9_64:
+      return TARGET_MODULO && TARGET_POWERPC64;
+    case ENB_P9V:
+      return TARGET_P9_VECTOR;
+    case ENB_P10:
+      return TARGET_POWER10;
+    case ENB_P10_64:
+      return TARGET_POWER10 && TARGET_POWERPC64;
+    case ENB_ALTIVEC:
+      return TARGET_ALTIVEC;
+    case ENB_VSX:
+      return TARGET_VSX;
+    case ENB_CELL:
+      return TARGET_ALTIVEC && rs6000_cpu == PROCESSOR_CELL;
+    case ENB_IEEE128_HW:
+      return TARGET_FLOAT128_HW;
+    case ENB_DFP:
+      return TARGET_DFP;
+    case ENB_CRYPTO:
+      return TARGET_CRYPTO;
+    case ENB_HTM:
+      return TARGET_HTM;
+    case ENB_MMA:
+      return TARGET_MMA;
+    default:
+      gcc_unreachable ();
+    }
+  gcc_unreachable ();
+}
+
+/* Expand the MMA built-ins early, so that we can convert the pass-by-reference
+   __vector_quad arguments into pass-by-value arguments, leading to more
+   efficient code generation.  */
+static bool
+rs6000_gimple_fold_new_mma_builtin (gimple_stmt_iterator *gsi,
+				    rs6000_gen_builtins fn_code)
+{
+  gimple *stmt = gsi_stmt (*gsi);
+  size_t fncode = (size_t) fn_code;
+
+  if (!bif_is_mma (rs6000_builtin_info_x[fncode]))
+    return false;
+
+  /* Each call that can be gimple-expanded has an associated built-in
+     function that it will expand into.  If this one doesn't, we have
+     already expanded it!  Exceptions: lxvp and stxvp.  */
+  if (rs6000_builtin_info_x[fncode].assoc_bif == RS6000_BIF_NONE
+      && fncode != RS6000_BIF_LXVP
+      && fncode != RS6000_BIF_STXVP)
+    return false;
+
+  bifdata *bd = &rs6000_builtin_info_x[fncode];
+  unsigned nopnds = bd->nargs;
+  gimple_seq new_seq = NULL;
+  gimple *new_call;
+  tree new_decl;
+
+  /* Compatibility built-ins; we used to call these
+     __builtin_mma_{dis,}assemble_pair, but now we call them
+     __builtin_vsx_{dis,}assemble_pair.  Handle the old versions.  */
+  if (fncode == RS6000_BIF_ASSEMBLE_PAIR)
+    fncode = RS6000_BIF_ASSEMBLE_PAIR_V;
+  else if (fncode == RS6000_BIF_DISASSEMBLE_PAIR)
+    fncode = RS6000_BIF_DISASSEMBLE_PAIR_V;
+
+  if (fncode == RS6000_BIF_DISASSEMBLE_ACC
+      || fncode == RS6000_BIF_DISASSEMBLE_PAIR_V)
+    {
+      /* This is an MMA disassemble built-in function.  */
+      push_gimplify_context (true);
+      unsigned nvec = (fncode == RS6000_BIF_DISASSEMBLE_ACC) ? 4 : 2;
+      tree dst_ptr = gimple_call_arg (stmt, 0);
+      tree src_ptr = gimple_call_arg (stmt, 1);
+      tree src_type = TREE_TYPE (src_ptr);
+      tree src = create_tmp_reg_or_ssa_name (TREE_TYPE (src_type));
+      gimplify_assign (src, build_simple_mem_ref (src_ptr), &new_seq);
+
+      /* If we are not disassembling an accumulator/pair or our destination is
+	 another accumulator/pair, then just copy the entire thing as is.  */
+      if ((fncode == RS6000_BIF_DISASSEMBLE_ACC
+	   && TREE_TYPE (TREE_TYPE (dst_ptr)) == vector_quad_type_node)
+	  || (fncode == RS6000_BIF_DISASSEMBLE_PAIR_V
+	      && TREE_TYPE (TREE_TYPE (dst_ptr)) == vector_pair_type_node))
+	{
+	  tree dst = build_simple_mem_ref (build1 (VIEW_CONVERT_EXPR,
+						   src_type, dst_ptr));
+	  gimplify_assign (dst, src, &new_seq);
+	  pop_gimplify_context (NULL);
+	  gsi_replace_with_seq (gsi, new_seq, true);
+	  return true;
+	}
+
+      /* If we're disassembling an accumulator into a different type, we need
+	 to emit a xxmfacc instruction now, since we cannot do it later.  */
+      if (fncode == RS6000_BIF_DISASSEMBLE_ACC)
+	{
+	  new_decl = rs6000_builtin_decls_x[RS6000_BIF_XXMFACC_INTERNAL];
+	  new_call = gimple_build_call (new_decl, 1, src);
+	  src = create_tmp_reg_or_ssa_name (vector_quad_type_node);
+	  gimple_call_set_lhs (new_call, src);
+	  gimple_seq_add_stmt (&new_seq, new_call);
+	}
+
+      /* Copy the accumulator/pair vector by vector.  */
+      new_decl
+	= rs6000_builtin_decls_x[rs6000_builtin_info_x[fncode].assoc_bif];
+      tree dst_type = build_pointer_type_for_mode (unsigned_V16QI_type_node,
+						   ptr_mode, true);
+      tree dst_base = build1 (VIEW_CONVERT_EXPR, dst_type, dst_ptr);
+      for (unsigned i = 0; i < nvec; i++)
+	{
+	  unsigned index = WORDS_BIG_ENDIAN ? i : nvec - 1 - i;
+	  tree dst = build2 (MEM_REF, unsigned_V16QI_type_node, dst_base,
+			     build_int_cst (dst_type, index * 16));
+	  tree dstssa = create_tmp_reg_or_ssa_name (unsigned_V16QI_type_node);
+	  new_call = gimple_build_call (new_decl, 2, src,
+					build_int_cstu (uint16_type_node, i));
+	  gimple_call_set_lhs (new_call, dstssa);
+	  gimple_seq_add_stmt (&new_seq, new_call);
+	  gimplify_assign (dst, dstssa, &new_seq);
+	}
+      pop_gimplify_context (NULL);
+      gsi_replace_with_seq (gsi, new_seq, true);
+      return true;
+    }
+
+  /* TODO: Do some factoring on these two chunks.  */
+  if (fncode == RS6000_BIF_LXVP)
+    {
+      push_gimplify_context (true);
+      tree offset = gimple_call_arg (stmt, 0);
+      tree ptr = gimple_call_arg (stmt, 1);
+      tree lhs = gimple_call_lhs (stmt);
+      if (TREE_TYPE (TREE_TYPE (ptr)) != vector_pair_type_node)
+	ptr = build1 (VIEW_CONVERT_EXPR,
+		      build_pointer_type (vector_pair_type_node), ptr);
+      tree mem = build_simple_mem_ref (build2 (POINTER_PLUS_EXPR,
+					       TREE_TYPE (ptr), ptr, offset));
+      gimplify_assign (lhs, mem, &new_seq);
+      pop_gimplify_context (NULL);
+      gsi_replace_with_seq (gsi, new_seq, true);
+      return true;
+    }
+
+  if (fncode == RS6000_BIF_STXVP)
+    {
+      push_gimplify_context (true);
+      tree src = gimple_call_arg (stmt, 0);
+      tree offset = gimple_call_arg (stmt, 1);
+      tree ptr = gimple_call_arg (stmt, 2);
+      if (TREE_TYPE (TREE_TYPE (ptr)) != vector_pair_type_node)
+	ptr = build1 (VIEW_CONVERT_EXPR,
+		      build_pointer_type (vector_pair_type_node), ptr);
+      tree mem = build_simple_mem_ref (build2 (POINTER_PLUS_EXPR,
+					       TREE_TYPE (ptr), ptr, offset));
+      gimplify_assign (mem, src, &new_seq);
+      pop_gimplify_context (NULL);
+      gsi_replace_with_seq (gsi, new_seq, true);
+      return true;
+    }
+
+  /* Convert this built-in into an internal version that uses pass-by-value
+     arguments.  The internal built-in is found in the assoc_bif field.  */
+  new_decl = rs6000_builtin_decls_x[rs6000_builtin_info_x[fncode].assoc_bif];
+  tree lhs, op[MAX_MMA_OPERANDS];
+  tree acc = gimple_call_arg (stmt, 0);
+  push_gimplify_context (true);
+
+  if (bif_is_quad (*bd))
+    {
+      /* This built-in has a pass-by-reference accumulator input, so load it
+	 into a temporary accumulator for use as a pass-by-value input.  */
+      op[0] = create_tmp_reg_or_ssa_name (vector_quad_type_node);
+      for (unsigned i = 1; i < nopnds; i++)
+	op[i] = gimple_call_arg (stmt, i);
+      gimplify_assign (op[0], build_simple_mem_ref (acc), &new_seq);
+    }
+  else
+    {
+      /* This built-in does not use its pass-by-reference accumulator argument
+	 as an input argument, so remove it from the input list.  */
+      nopnds--;
+      for (unsigned i = 0; i < nopnds; i++)
+	op[i] = gimple_call_arg (stmt, i + 1);
+    }
+
+  switch (nopnds)
+    {
+    case 0:
+      new_call = gimple_build_call (new_decl, 0);
+      break;
+    case 1:
+      new_call = gimple_build_call (new_decl, 1, op[0]);
+      break;
+    case 2:
+      new_call = gimple_build_call (new_decl, 2, op[0], op[1]);
+      break;
+    case 3:
+      new_call = gimple_build_call (new_decl, 3, op[0], op[1], op[2]);
+      break;
+    case 4:
+      new_call = gimple_build_call (new_decl, 4, op[0], op[1], op[2], op[3]);
+      break;
+    case 5:
+      new_call = gimple_build_call (new_decl, 5, op[0], op[1], op[2], op[3],
+				    op[4]);
+      break;
+    case 6:
+      new_call = gimple_build_call (new_decl, 6, op[0], op[1], op[2], op[3],
+				    op[4], op[5]);
+      break;
+    case 7:
+      new_call = gimple_build_call (new_decl, 7, op[0], op[1], op[2], op[3],
+				    op[4], op[5], op[6]);
+      break;
+    default:
+      gcc_unreachable ();
+    }
+
+  if (fncode == RS6000_BIF_BUILD_PAIR || fncode == RS6000_BIF_ASSEMBLE_PAIR_V)
+    lhs = create_tmp_reg_or_ssa_name (vector_pair_type_node);
+  else
+    lhs = create_tmp_reg_or_ssa_name (vector_quad_type_node);
+  gimple_call_set_lhs (new_call, lhs);
+  gimple_seq_add_stmt (&new_seq, new_call);
+  gimplify_assign (build_simple_mem_ref (acc), lhs, &new_seq);
+  pop_gimplify_context (NULL);
+  gsi_replace_with_seq (gsi, new_seq, true);
+
+  return true;
+}
+
+/* Fold a machine-dependent built-in in GIMPLE.  (For folding into
+   a constant, use rs6000_fold_builtin.)  */
+static bool
+rs6000_gimple_fold_new_builtin (gimple_stmt_iterator *gsi)
+{
+  gimple *stmt = gsi_stmt (*gsi);
+  tree fndecl = gimple_call_fndecl (stmt);
+  gcc_checking_assert (fndecl && DECL_BUILT_IN_CLASS (fndecl) == BUILT_IN_MD);
+  enum rs6000_gen_builtins fn_code
+    = (enum rs6000_gen_builtins) DECL_MD_FUNCTION_CODE (fndecl);
+  tree arg0, arg1, lhs, temp;
+  enum tree_code bcode;
+  gimple *g;
+
+  size_t uns_fncode = (size_t) fn_code;
+  enum insn_code icode = rs6000_builtin_info_x[uns_fncode].icode;
+  const char *fn_name1 = rs6000_builtin_info_x[uns_fncode].bifname;
+  const char *fn_name2 = (icode != CODE_FOR_nothing)
+			  ? get_insn_name ((int) icode)
+			  : "nothing";
+
+  if (TARGET_DEBUG_BUILTIN)
+      fprintf (stderr, "rs6000_gimple_fold_new_builtin %d %s %s\n",
+	       fn_code, fn_name1, fn_name2);
+
+  if (!rs6000_fold_gimple)
+    return false;
+
+  /* Prevent gimple folding for code that does not have a LHS, unless it is
+     allowed per the rs6000_new_builtin_valid_without_lhs helper function.  */
+  if (!gimple_call_lhs (stmt)
+      && !rs6000_new_builtin_valid_without_lhs (fn_code, fndecl))
+    return false;
+
+  /* Don't fold invalid builtins, let rs6000_expand_builtin diagnose it.  */
+  if (!rs6000_new_builtin_is_supported (fn_code))
+    return false;
+
+  if (rs6000_gimple_fold_new_mma_builtin (gsi, fn_code))
+    return true;
+
+  switch (fn_code)
+    {
+    /* Flavors of vec_add.  We deliberately don't expand
+       RS6000_BIF_VADDUQM as it gets lowered from V1TImode to
+       TImode, resulting in much poorer code generation.  */
+    case RS6000_BIF_VADDUBM:
+    case RS6000_BIF_VADDUHM:
+    case RS6000_BIF_VADDUWM:
+    case RS6000_BIF_VADDUDM:
+    case RS6000_BIF_VADDFP:
+    case RS6000_BIF_XVADDDP:
+    case RS6000_BIF_XVADDSP:
+      bcode = PLUS_EXPR;
+    do_binary:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      if (INTEGRAL_TYPE_P (TREE_TYPE (TREE_TYPE (lhs)))
+	  && !TYPE_OVERFLOW_WRAPS (TREE_TYPE (TREE_TYPE (lhs))))
+	{
+	  /* Ensure the binary operation is performed in a type
+	     that wraps if it is integral type.  */
+	  gimple_seq stmts = NULL;
+	  tree type = unsigned_type_for (TREE_TYPE (lhs));
+	  tree uarg0 = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+				     type, arg0);
+	  tree uarg1 = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+				     type, arg1);
+	  tree res = gimple_build (&stmts, gimple_location (stmt), bcode,
+				   type, uarg0, uarg1);
+	  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	  g = gimple_build_assign (lhs, VIEW_CONVERT_EXPR,
+				   build1 (VIEW_CONVERT_EXPR,
+					   TREE_TYPE (lhs), res));
+	  gsi_replace (gsi, g, true);
+	  return true;
+	}
+      g = gimple_build_assign (lhs, bcode, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_sub.  We deliberately don't expand
+       RS6000_BIF_VSUBUQM. */
+    case RS6000_BIF_VSUBUBM:
+    case RS6000_BIF_VSUBUHM:
+    case RS6000_BIF_VSUBUWM:
+    case RS6000_BIF_VSUBUDM:
+    case RS6000_BIF_VSUBFP:
+    case RS6000_BIF_XVSUBDP:
+    case RS6000_BIF_XVSUBSP:
+      bcode = MINUS_EXPR;
+      goto do_binary;
+    case RS6000_BIF_XVMULSP:
+    case RS6000_BIF_XVMULDP:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, MULT_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Even element flavors of vec_mul (signed). */
+    case RS6000_BIF_VMULESB:
+    case RS6000_BIF_VMULESH:
+    case RS6000_BIF_VMULESW:
+    /* Even element flavors of vec_mul (unsigned).  */
+    case RS6000_BIF_VMULEUB:
+    case RS6000_BIF_VMULEUH:
+    case RS6000_BIF_VMULEUW:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, VEC_WIDEN_MULT_EVEN_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Odd element flavors of vec_mul (signed).  */
+    case RS6000_BIF_VMULOSB:
+    case RS6000_BIF_VMULOSH:
+    case RS6000_BIF_VMULOSW:
+    /* Odd element flavors of vec_mul (unsigned). */
+    case RS6000_BIF_VMULOUB:
+    case RS6000_BIF_VMULOUH:
+    case RS6000_BIF_VMULOUW:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, VEC_WIDEN_MULT_ODD_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_div (Integer).  */
+    case RS6000_BIF_DIV_V2DI:
+    case RS6000_BIF_UDIV_V2DI:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, TRUNC_DIV_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_div (Float).  */
+    case RS6000_BIF_XVDIVSP:
+    case RS6000_BIF_XVDIVDP:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, RDIV_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_and.  */
+    case RS6000_BIF_VAND_V16QI_UNS:
+    case RS6000_BIF_VAND_V16QI:
+    case RS6000_BIF_VAND_V8HI_UNS:
+    case RS6000_BIF_VAND_V8HI:
+    case RS6000_BIF_VAND_V4SI_UNS:
+    case RS6000_BIF_VAND_V4SI:
+    case RS6000_BIF_VAND_V2DI_UNS:
+    case RS6000_BIF_VAND_V2DI:
+    case RS6000_BIF_VAND_V4SF:
+    case RS6000_BIF_VAND_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, BIT_AND_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_andc.  */
+    case RS6000_BIF_VANDC_V16QI_UNS:
+    case RS6000_BIF_VANDC_V16QI:
+    case RS6000_BIF_VANDC_V8HI_UNS:
+    case RS6000_BIF_VANDC_V8HI:
+    case RS6000_BIF_VANDC_V4SI_UNS:
+    case RS6000_BIF_VANDC_V4SI:
+    case RS6000_BIF_VANDC_V2DI_UNS:
+    case RS6000_BIF_VANDC_V2DI:
+    case RS6000_BIF_VANDC_V4SF:
+    case RS6000_BIF_VANDC_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      temp = create_tmp_reg_or_ssa_name (TREE_TYPE (arg1));
+      g = gimple_build_assign (temp, BIT_NOT_EXPR, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_insert_before (gsi, g, GSI_SAME_STMT);
+      g = gimple_build_assign (lhs, BIT_AND_EXPR, arg0, temp);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_nand.  */
+    case RS6000_BIF_NAND_V16QI_UNS:
+    case RS6000_BIF_NAND_V16QI:
+    case RS6000_BIF_NAND_V8HI_UNS:
+    case RS6000_BIF_NAND_V8HI:
+    case RS6000_BIF_NAND_V4SI_UNS:
+    case RS6000_BIF_NAND_V4SI:
+    case RS6000_BIF_NAND_V2DI_UNS:
+    case RS6000_BIF_NAND_V2DI:
+    case RS6000_BIF_NAND_V4SF:
+    case RS6000_BIF_NAND_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      temp = create_tmp_reg_or_ssa_name (TREE_TYPE (arg1));
+      g = gimple_build_assign (temp, BIT_AND_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_insert_before (gsi, g, GSI_SAME_STMT);
+      g = gimple_build_assign (lhs, BIT_NOT_EXPR, temp);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_or.  */
+    case RS6000_BIF_VOR_V16QI_UNS:
+    case RS6000_BIF_VOR_V16QI:
+    case RS6000_BIF_VOR_V8HI_UNS:
+    case RS6000_BIF_VOR_V8HI:
+    case RS6000_BIF_VOR_V4SI_UNS:
+    case RS6000_BIF_VOR_V4SI:
+    case RS6000_BIF_VOR_V2DI_UNS:
+    case RS6000_BIF_VOR_V2DI:
+    case RS6000_BIF_VOR_V4SF:
+    case RS6000_BIF_VOR_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, BIT_IOR_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* flavors of vec_orc.  */
+    case RS6000_BIF_ORC_V16QI_UNS:
+    case RS6000_BIF_ORC_V16QI:
+    case RS6000_BIF_ORC_V8HI_UNS:
+    case RS6000_BIF_ORC_V8HI:
+    case RS6000_BIF_ORC_V4SI_UNS:
+    case RS6000_BIF_ORC_V4SI:
+    case RS6000_BIF_ORC_V2DI_UNS:
+    case RS6000_BIF_ORC_V2DI:
+    case RS6000_BIF_ORC_V4SF:
+    case RS6000_BIF_ORC_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      temp = create_tmp_reg_or_ssa_name (TREE_TYPE (arg1));
+      g = gimple_build_assign (temp, BIT_NOT_EXPR, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_insert_before (gsi, g, GSI_SAME_STMT);
+      g = gimple_build_assign (lhs, BIT_IOR_EXPR, arg0, temp);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_xor.  */
+    case RS6000_BIF_VXOR_V16QI_UNS:
+    case RS6000_BIF_VXOR_V16QI:
+    case RS6000_BIF_VXOR_V8HI_UNS:
+    case RS6000_BIF_VXOR_V8HI:
+    case RS6000_BIF_VXOR_V4SI_UNS:
+    case RS6000_BIF_VXOR_V4SI:
+    case RS6000_BIF_VXOR_V2DI_UNS:
+    case RS6000_BIF_VXOR_V2DI:
+    case RS6000_BIF_VXOR_V4SF:
+    case RS6000_BIF_VXOR_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, BIT_XOR_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_nor.  */
+    case RS6000_BIF_VNOR_V16QI_UNS:
+    case RS6000_BIF_VNOR_V16QI:
+    case RS6000_BIF_VNOR_V8HI_UNS:
+    case RS6000_BIF_VNOR_V8HI:
+    case RS6000_BIF_VNOR_V4SI_UNS:
+    case RS6000_BIF_VNOR_V4SI:
+    case RS6000_BIF_VNOR_V2DI_UNS:
+    case RS6000_BIF_VNOR_V2DI:
+    case RS6000_BIF_VNOR_V4SF:
+    case RS6000_BIF_VNOR_V2DF:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      temp = create_tmp_reg_or_ssa_name (TREE_TYPE (arg1));
+      g = gimple_build_assign (temp, BIT_IOR_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_insert_before (gsi, g, GSI_SAME_STMT);
+      g = gimple_build_assign (lhs, BIT_NOT_EXPR, temp);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* flavors of vec_abs.  */
+    case RS6000_BIF_ABS_V16QI:
+    case RS6000_BIF_ABS_V8HI:
+    case RS6000_BIF_ABS_V4SI:
+    case RS6000_BIF_ABS_V4SF:
+    case RS6000_BIF_ABS_V2DI:
+    case RS6000_BIF_XVABSDP:
+    case RS6000_BIF_XVABSSP:
+      arg0 = gimple_call_arg (stmt, 0);
+      if (INTEGRAL_TYPE_P (TREE_TYPE (TREE_TYPE (arg0)))
+	  && !TYPE_OVERFLOW_WRAPS (TREE_TYPE (TREE_TYPE (arg0))))
+	return false;
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, ABS_EXPR, arg0);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* flavors of vec_min.  */
+    case RS6000_BIF_XVMINDP:
+    case RS6000_BIF_XVMINSP:
+    case RS6000_BIF_VMINFP:
+      {
+	lhs = gimple_call_lhs (stmt);
+	tree type = TREE_TYPE (lhs);
+	if (HONOR_NANS (type))
+	  return false;
+	gcc_fallthrough ();
+      }
+    case RS6000_BIF_VMINSD:
+    case RS6000_BIF_VMINUD:
+    case RS6000_BIF_VMINSB:
+    case RS6000_BIF_VMINSH:
+    case RS6000_BIF_VMINSW:
+    case RS6000_BIF_VMINUB:
+    case RS6000_BIF_VMINUH:
+    case RS6000_BIF_VMINUW:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, MIN_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* flavors of vec_max.  */
+    case RS6000_BIF_XVMAXDP:
+    case RS6000_BIF_XVMAXSP:
+    case RS6000_BIF_VMAXFP:
+      {
+	lhs = gimple_call_lhs (stmt);
+	tree type = TREE_TYPE (lhs);
+	if (HONOR_NANS (type))
+	  return false;
+	gcc_fallthrough ();
+      }
+    case RS6000_BIF_VMAXSD:
+    case RS6000_BIF_VMAXUD:
+    case RS6000_BIF_VMAXSB:
+    case RS6000_BIF_VMAXSH:
+    case RS6000_BIF_VMAXSW:
+    case RS6000_BIF_VMAXUB:
+    case RS6000_BIF_VMAXUH:
+    case RS6000_BIF_VMAXUW:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, MAX_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_eqv.  */
+    case RS6000_BIF_EQV_V16QI:
+    case RS6000_BIF_EQV_V8HI:
+    case RS6000_BIF_EQV_V4SI:
+    case RS6000_BIF_EQV_V4SF:
+    case RS6000_BIF_EQV_V2DF:
+    case RS6000_BIF_EQV_V2DI:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      temp = create_tmp_reg_or_ssa_name (TREE_TYPE (arg1));
+      g = gimple_build_assign (temp, BIT_XOR_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_insert_before (gsi, g, GSI_SAME_STMT);
+      g = gimple_build_assign (lhs, BIT_NOT_EXPR, temp);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+    /* Flavors of vec_rotate_left.  */
+    case RS6000_BIF_VRLB:
+    case RS6000_BIF_VRLH:
+    case RS6000_BIF_VRLW:
+    case RS6000_BIF_VRLD:
+      arg0 = gimple_call_arg (stmt, 0);
+      arg1 = gimple_call_arg (stmt, 1);
+      lhs = gimple_call_lhs (stmt);
+      g = gimple_build_assign (lhs, LROTATE_EXPR, arg0, arg1);
+      gimple_set_location (g, gimple_location (stmt));
+      gsi_replace (gsi, g, true);
+      return true;
+  /* Flavors of vector shift right algebraic.
+     vec_sra{b,h,w} -> vsra{b,h,w}.  */
+    case RS6000_BIF_VSRAB:
+    case RS6000_BIF_VSRAH:
+    case RS6000_BIF_VSRAW:
+    case RS6000_BIF_VSRAD:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	arg1 = gimple_call_arg (stmt, 1);
+	lhs = gimple_call_lhs (stmt);
+	tree arg1_type = TREE_TYPE (arg1);
+	tree unsigned_arg1_type = unsigned_type_for (TREE_TYPE (arg1));
+	tree unsigned_element_type = unsigned_type_for (TREE_TYPE (arg1_type));
+	location_t loc = gimple_location (stmt);
+	/* Force arg1 into the range valid matching the arg0 type.  */
+	/* Build a vector consisting of the max valid bit-size values.  */
+	int n_elts = VECTOR_CST_NELTS (arg1);
+	tree element_size = build_int_cst (unsigned_element_type,
+					   128 / n_elts);
+	tree_vector_builder elts (unsigned_arg1_type, n_elts, 1);
+	for (int i = 0; i < n_elts; i++)
+	  elts.safe_push (element_size);
+	tree modulo_tree = elts.build ();
+	/* Modulo the provided shift value against that vector.  */
+	gimple_seq stmts = NULL;
+	tree unsigned_arg1 = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+					   unsigned_arg1_type, arg1);
+	tree new_arg1 = gimple_build (&stmts, loc, TRUNC_MOD_EXPR,
+				      unsigned_arg1_type, unsigned_arg1,
+				      modulo_tree);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	/* And finally, do the shift.  */
+	g = gimple_build_assign (lhs, RSHIFT_EXPR, arg0, new_arg1);
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+   /* Flavors of vector shift left.
+      builtin_altivec_vsl{b,h,w} -> vsl{b,h,w}.  */
+    case RS6000_BIF_VSLB:
+    case RS6000_BIF_VSLH:
+    case RS6000_BIF_VSLW:
+    case RS6000_BIF_VSLD:
+      {
+	location_t loc;
+	gimple_seq stmts = NULL;
+	arg0 = gimple_call_arg (stmt, 0);
+	tree arg0_type = TREE_TYPE (arg0);
+	if (INTEGRAL_TYPE_P (TREE_TYPE (arg0_type))
+	    && !TYPE_OVERFLOW_WRAPS (TREE_TYPE (arg0_type)))
+	  return false;
+	arg1 = gimple_call_arg (stmt, 1);
+	tree arg1_type = TREE_TYPE (arg1);
+	tree unsigned_arg1_type = unsigned_type_for (TREE_TYPE (arg1));
+	tree unsigned_element_type = unsigned_type_for (TREE_TYPE (arg1_type));
+	loc = gimple_location (stmt);
+	lhs = gimple_call_lhs (stmt);
+	/* Force arg1 into the range valid matching the arg0 type.  */
+	/* Build a vector consisting of the max valid bit-size values.  */
+	int n_elts = VECTOR_CST_NELTS (arg1);
+	int tree_size_in_bits = TREE_INT_CST_LOW (size_in_bytes (arg1_type))
+				* BITS_PER_UNIT;
+	tree element_size = build_int_cst (unsigned_element_type,
+					   tree_size_in_bits / n_elts);
+	tree_vector_builder elts (unsigned_type_for (arg1_type), n_elts, 1);
+	for (int i = 0; i < n_elts; i++)
+	  elts.safe_push (element_size);
+	tree modulo_tree = elts.build ();
+	/* Modulo the provided shift value against that vector.  */
+	tree unsigned_arg1 = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+					   unsigned_arg1_type, arg1);
+	tree new_arg1 = gimple_build (&stmts, loc, TRUNC_MOD_EXPR,
+				      unsigned_arg1_type, unsigned_arg1,
+				      modulo_tree);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	/* And finally, do the shift.  */
+	g = gimple_build_assign (lhs, LSHIFT_EXPR, arg0, new_arg1);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+    /* Flavors of vector shift right.  */
+    case RS6000_BIF_VSRB:
+    case RS6000_BIF_VSRH:
+    case RS6000_BIF_VSRW:
+    case RS6000_BIF_VSRD:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	arg1 = gimple_call_arg (stmt, 1);
+	lhs = gimple_call_lhs (stmt);
+	tree arg1_type = TREE_TYPE (arg1);
+	tree unsigned_arg1_type = unsigned_type_for (TREE_TYPE (arg1));
+	tree unsigned_element_type = unsigned_type_for (TREE_TYPE (arg1_type));
+	location_t loc = gimple_location (stmt);
+	gimple_seq stmts = NULL;
+	/* Convert arg0 to unsigned.  */
+	tree arg0_unsigned
+	  = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+			  unsigned_type_for (TREE_TYPE (arg0)), arg0);
+	/* Force arg1 into the range valid matching the arg0 type.  */
+	/* Build a vector consisting of the max valid bit-size values.  */
+	int n_elts = VECTOR_CST_NELTS (arg1);
+	tree element_size = build_int_cst (unsigned_element_type,
+					   128 / n_elts);
+	tree_vector_builder elts (unsigned_arg1_type, n_elts, 1);
+	for (int i = 0; i < n_elts; i++)
+	  elts.safe_push (element_size);
+	tree modulo_tree = elts.build ();
+	/* Modulo the provided shift value against that vector.  */
+	tree unsigned_arg1 = gimple_build (&stmts, VIEW_CONVERT_EXPR,
+					   unsigned_arg1_type, arg1);
+	tree new_arg1 = gimple_build (&stmts, loc, TRUNC_MOD_EXPR,
+				      unsigned_arg1_type, unsigned_arg1,
+				      modulo_tree);
+	/* Do the shift.  */
+	tree res
+	  = gimple_build (&stmts, RSHIFT_EXPR,
+			  TREE_TYPE (arg0_unsigned), arg0_unsigned, new_arg1);
+	/* Convert result back to the lhs type.  */
+	res = gimple_build (&stmts, VIEW_CONVERT_EXPR, TREE_TYPE (lhs), res);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	replace_call_with_value (gsi, res);
+	return true;
+      }
+    /* Vector loads.  */
+    case RS6000_BIF_LVX_V16QI:
+    case RS6000_BIF_LVX_V8HI:
+    case RS6000_BIF_LVX_V4SI:
+    case RS6000_BIF_LVX_V4SF:
+    case RS6000_BIF_LVX_V2DI:
+    case RS6000_BIF_LVX_V2DF:
+    case RS6000_BIF_LVX_V1TI:
+      {
+	arg0 = gimple_call_arg (stmt, 0);  // offset
+	arg1 = gimple_call_arg (stmt, 1);  // address
+	lhs = gimple_call_lhs (stmt);
+	location_t loc = gimple_location (stmt);
+	/* Since arg1 may be cast to a different type, just use ptr_type_node
+	   here instead of trying to enforce TBAA on pointer types.  */
+	tree arg1_type = ptr_type_node;
+	tree lhs_type = TREE_TYPE (lhs);
+	/* POINTER_PLUS_EXPR wants the offset to be of type 'sizetype'.  Create
+	   the tree using the value from arg0.  The resulting type will match
+	   the type of arg1.  */
+	gimple_seq stmts = NULL;
+	tree temp_offset = gimple_convert (&stmts, loc, sizetype, arg0);
+	tree temp_addr = gimple_build (&stmts, loc, POINTER_PLUS_EXPR,
+				       arg1_type, arg1, temp_offset);
+	/* Mask off any lower bits from the address.  */
+	tree aligned_addr = gimple_build (&stmts, loc, BIT_AND_EXPR,
+					  arg1_type, temp_addr,
+					  build_int_cst (arg1_type, -16));
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	if (!is_gimple_mem_ref_addr (aligned_addr))
+	  {
+	    tree t = make_ssa_name (TREE_TYPE (aligned_addr));
+	    gimple *g = gimple_build_assign (t, aligned_addr);
+	    gsi_insert_before (gsi, g, GSI_SAME_STMT);
+	    aligned_addr = t;
+	  }
+	/* Use the build2 helper to set up the mem_ref.  The MEM_REF could also
+	   take an offset, but since we've already incorporated the offset
+	   above, here we just pass in a zero.  */
+	gimple *g
+	  = gimple_build_assign (lhs, build2 (MEM_REF, lhs_type, aligned_addr,
+					      build_int_cst (arg1_type, 0)));
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+    /* Vector stores.  */
+    case RS6000_BIF_STVX_V16QI:
+    case RS6000_BIF_STVX_V8HI:
+    case RS6000_BIF_STVX_V4SI:
+    case RS6000_BIF_STVX_V4SF:
+    case RS6000_BIF_STVX_V2DI:
+    case RS6000_BIF_STVX_V2DF:
+      {
+	arg0 = gimple_call_arg (stmt, 0); /* Value to be stored.  */
+	arg1 = gimple_call_arg (stmt, 1); /* Offset.  */
+	tree arg2 = gimple_call_arg (stmt, 2); /* Store-to address.  */
+	location_t loc = gimple_location (stmt);
+	tree arg0_type = TREE_TYPE (arg0);
+	/* Use ptr_type_node (no TBAA) for the arg2_type.
+	   FIXME: (Richard)  "A proper fix would be to transition this type as
+	   seen from the frontend to GIMPLE, for example in a similar way we
+	   do for MEM_REFs by piggy-backing that on an extra argument, a
+	   constant zero pointer of the alias pointer type to use (which would
+	   also serve as a type indicator of the store itself).  I'd use a
+	   target specific internal function for this (not sure if we can have
+	   those target specific, but I guess if it's folded away then that's
+	   fine) and get away with the overload set."  */
+	tree arg2_type = ptr_type_node;
+	/* POINTER_PLUS_EXPR wants the offset to be of type 'sizetype'.  Create
+	   the tree using the value from arg0.  The resulting type will match
+	   the type of arg2.  */
+	gimple_seq stmts = NULL;
+	tree temp_offset = gimple_convert (&stmts, loc, sizetype, arg1);
+	tree temp_addr = gimple_build (&stmts, loc, POINTER_PLUS_EXPR,
+				       arg2_type, arg2, temp_offset);
+	/* Mask off any lower bits from the address.  */
+	tree aligned_addr = gimple_build (&stmts, loc, BIT_AND_EXPR,
+					  arg2_type, temp_addr,
+					  build_int_cst (arg2_type, -16));
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	if (!is_gimple_mem_ref_addr (aligned_addr))
+	  {
+	    tree t = make_ssa_name (TREE_TYPE (aligned_addr));
+	    gimple *g = gimple_build_assign (t, aligned_addr);
+	    gsi_insert_before (gsi, g, GSI_SAME_STMT);
+	    aligned_addr = t;
+	  }
+	/* The desired gimple result should be similar to:
+	   MEM[(__vector floatD.1407 *)_1] = vf1D.2697;  */
+	gimple *g
+	  = gimple_build_assign (build2 (MEM_REF, arg0_type, aligned_addr,
+					 build_int_cst (arg2_type, 0)), arg0);
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* unaligned Vector loads.  */
+    case RS6000_BIF_LXVW4X_V16QI:
+    case RS6000_BIF_LXVW4X_V8HI:
+    case RS6000_BIF_LXVW4X_V4SF:
+    case RS6000_BIF_LXVW4X_V4SI:
+    case RS6000_BIF_LXVD2X_V2DF:
+    case RS6000_BIF_LXVD2X_V2DI:
+      {
+	arg0 = gimple_call_arg (stmt, 0);  // offset
+	arg1 = gimple_call_arg (stmt, 1);  // address
+	lhs = gimple_call_lhs (stmt);
+	location_t loc = gimple_location (stmt);
+	/* Since arg1 may be cast to a different type, just use ptr_type_node
+	   here instead of trying to enforce TBAA on pointer types.  */
+	tree arg1_type = ptr_type_node;
+	tree lhs_type = TREE_TYPE (lhs);
+	/* In GIMPLE the type of the MEM_REF specifies the alignment.  The
+	  required alignment (power) is 4 bytes regardless of data type.  */
+	tree align_ltype = build_aligned_type (lhs_type, 4);
+	/* POINTER_PLUS_EXPR wants the offset to be of type 'sizetype'.  Create
+	   the tree using the value from arg0.  The resulting type will match
+	   the type of arg1.  */
+	gimple_seq stmts = NULL;
+	tree temp_offset = gimple_convert (&stmts, loc, sizetype, arg0);
+	tree temp_addr = gimple_build (&stmts, loc, POINTER_PLUS_EXPR,
+				       arg1_type, arg1, temp_offset);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	if (!is_gimple_mem_ref_addr (temp_addr))
+	  {
+	    tree t = make_ssa_name (TREE_TYPE (temp_addr));
+	    gimple *g = gimple_build_assign (t, temp_addr);
+	    gsi_insert_before (gsi, g, GSI_SAME_STMT);
+	    temp_addr = t;
+	  }
+	/* Use the build2 helper to set up the mem_ref.  The MEM_REF could also
+	   take an offset, but since we've already incorporated the offset
+	   above, here we just pass in a zero.  */
+	gimple *g;
+	g = gimple_build_assign (lhs, build2 (MEM_REF, align_ltype, temp_addr,
+					      build_int_cst (arg1_type, 0)));
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* unaligned Vector stores.  */
+    case RS6000_BIF_STXVW4X_V16QI:
+    case RS6000_BIF_STXVW4X_V8HI:
+    case RS6000_BIF_STXVW4X_V4SF:
+    case RS6000_BIF_STXVW4X_V4SI:
+    case RS6000_BIF_STXVD2X_V2DF:
+    case RS6000_BIF_STXVD2X_V2DI:
+      {
+	arg0 = gimple_call_arg (stmt, 0); /* Value to be stored.  */
+	arg1 = gimple_call_arg (stmt, 1); /* Offset.  */
+	tree arg2 = gimple_call_arg (stmt, 2); /* Store-to address.  */
+	location_t loc = gimple_location (stmt);
+	tree arg0_type = TREE_TYPE (arg0);
+	/* Use ptr_type_node (no TBAA) for the arg2_type.  */
+	tree arg2_type = ptr_type_node;
+	/* In GIMPLE the type of the MEM_REF specifies the alignment.  The
+	   required alignment (power) is 4 bytes regardless of data type.  */
+	tree align_stype = build_aligned_type (arg0_type, 4);
+	/* POINTER_PLUS_EXPR wants the offset to be of type 'sizetype'.  Create
+	   the tree using the value from arg1.  */
+	gimple_seq stmts = NULL;
+	tree temp_offset = gimple_convert (&stmts, loc, sizetype, arg1);
+	tree temp_addr = gimple_build (&stmts, loc, POINTER_PLUS_EXPR,
+				       arg2_type, arg2, temp_offset);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	if (!is_gimple_mem_ref_addr (temp_addr))
+	  {
+	    tree t = make_ssa_name (TREE_TYPE (temp_addr));
+	    gimple *g = gimple_build_assign (t, temp_addr);
+	    gsi_insert_before (gsi, g, GSI_SAME_STMT);
+	    temp_addr = t;
+	  }
+	gimple *g;
+	g = gimple_build_assign (build2 (MEM_REF, align_stype, temp_addr,
+					 build_int_cst (arg2_type, 0)), arg0);
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* Vector Fused multiply-add (fma).  */
+    case RS6000_BIF_VMADDFP:
+    case RS6000_BIF_XVMADDDP:
+    case RS6000_BIF_XVMADDSP:
+    case RS6000_BIF_VMLADDUHM:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	arg1 = gimple_call_arg (stmt, 1);
+	tree arg2 = gimple_call_arg (stmt, 2);
+	lhs = gimple_call_lhs (stmt);
+	gcall *g = gimple_build_call_internal (IFN_FMA, 3, arg0, arg1, arg2);
+	gimple_call_set_lhs (g, lhs);
+	gimple_call_set_nothrow (g, true);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* Vector compares; EQ, NE, GE, GT, LE.  */
+    case RS6000_BIF_VCMPEQUB:
+    case RS6000_BIF_VCMPEQUH:
+    case RS6000_BIF_VCMPEQUW:
+    case RS6000_BIF_VCMPEQUD:
+    /* We deliberately omit RS6000_BIF_VCMPEQUT for now, because gimple
+       folding produces worse code for 128-bit compares.  */
+      fold_compare_helper (gsi, EQ_EXPR, stmt);
+      return true;
+
+    case RS6000_BIF_VCMPNEB:
+    case RS6000_BIF_VCMPNEH:
+    case RS6000_BIF_VCMPNEW:
+    /* We deliberately omit RS6000_BIF_VCMPNET for now, because gimple
+       folding produces worse code for 128-bit compares.  */
+      fold_compare_helper (gsi, NE_EXPR, stmt);
+      return true;
+
+    case RS6000_BIF_CMPGE_16QI:
+    case RS6000_BIF_CMPGE_U16QI:
+    case RS6000_BIF_CMPGE_8HI:
+    case RS6000_BIF_CMPGE_U8HI:
+    case RS6000_BIF_CMPGE_4SI:
+    case RS6000_BIF_CMPGE_U4SI:
+    case RS6000_BIF_CMPGE_2DI:
+    case RS6000_BIF_CMPGE_U2DI:
+    /* We deliberately omit RS6000_BIF_CMPGE_1TI and RS6000_BIF_CMPGE_U1TI
+       for now, because gimple folding produces worse code for 128-bit
+       compares.  */
+      fold_compare_helper (gsi, GE_EXPR, stmt);
+      return true;
+
+    case RS6000_BIF_VCMPGTSB:
+    case RS6000_BIF_VCMPGTUB:
+    case RS6000_BIF_VCMPGTSH:
+    case RS6000_BIF_VCMPGTUH:
+    case RS6000_BIF_VCMPGTSW:
+    case RS6000_BIF_VCMPGTUW:
+    case RS6000_BIF_VCMPGTUD:
+    case RS6000_BIF_VCMPGTSD:
+    /* We deliberately omit RS6000_BIF_VCMPGTUT and RS6000_BIF_VCMPGTST
+       for now, because gimple folding produces worse code for 128-bit
+       compares.  */
+      fold_compare_helper (gsi, GT_EXPR, stmt);
+      return true;
+
+    case RS6000_BIF_CMPLE_16QI:
+    case RS6000_BIF_CMPLE_U16QI:
+    case RS6000_BIF_CMPLE_8HI:
+    case RS6000_BIF_CMPLE_U8HI:
+    case RS6000_BIF_CMPLE_4SI:
+    case RS6000_BIF_CMPLE_U4SI:
+    case RS6000_BIF_CMPLE_2DI:
+    case RS6000_BIF_CMPLE_U2DI:
+    /* We deliberately omit RS6000_BIF_CMPLE_1TI and RS6000_BIF_CMPLE_U1TI
+       for now, because gimple folding produces worse code for 128-bit
+       compares.  */
+      fold_compare_helper (gsi, LE_EXPR, stmt);
+      return true;
+
+    /* flavors of vec_splat_[us]{8,16,32}.  */
+    case RS6000_BIF_VSPLTISB:
+    case RS6000_BIF_VSPLTISH:
+    case RS6000_BIF_VSPLTISW:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	lhs = gimple_call_lhs (stmt);
+
+	/* Only fold the vec_splat_*() if the lower bits of arg 0 is a
+	   5-bit signed constant in range -16 to +15.  */
+	if (TREE_CODE (arg0) != INTEGER_CST
+	    || !IN_RANGE (TREE_INT_CST_LOW (arg0), -16, 15))
+	  return false;
+	gimple_seq stmts = NULL;
+	location_t loc = gimple_location (stmt);
+	tree splat_value = gimple_convert (&stmts, loc,
+					   TREE_TYPE (TREE_TYPE (lhs)), arg0);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	tree splat_tree = build_vector_from_val (TREE_TYPE (lhs), splat_value);
+	g = gimple_build_assign (lhs, splat_tree);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* Flavors of vec_splat.  */
+    /* a = vec_splat (b, 0x3) becomes a = { b[3],b[3],b[3],...};  */
+    case RS6000_BIF_VSPLTB:
+    case RS6000_BIF_VSPLTH:
+    case RS6000_BIF_VSPLTW:
+    case RS6000_BIF_XXSPLTD_V2DI:
+    case RS6000_BIF_XXSPLTD_V2DF:
+      {
+	arg0 = gimple_call_arg (stmt, 0); /* input vector.  */
+	arg1 = gimple_call_arg (stmt, 1); /* index into arg0.  */
+	/* Only fold the vec_splat_*() if arg1 is both a constant value and
+	   is a valid index into the arg0 vector.  */
+	unsigned int n_elts = VECTOR_CST_NELTS (arg0);
+	if (TREE_CODE (arg1) != INTEGER_CST
+	    || TREE_INT_CST_LOW (arg1) > (n_elts -1))
+	  return false;
+	lhs = gimple_call_lhs (stmt);
+	tree lhs_type = TREE_TYPE (lhs);
+	tree arg0_type = TREE_TYPE (arg0);
+	tree splat;
+	if (TREE_CODE (arg0) == VECTOR_CST)
+	  splat = VECTOR_CST_ELT (arg0, TREE_INT_CST_LOW (arg1));
+	else
+	  {
+	    /* Determine (in bits) the length and start location of the
+	       splat value for a call to the tree_vec_extract helper.  */
+	    int splat_elem_size = TREE_INT_CST_LOW (size_in_bytes (arg0_type))
+				  * BITS_PER_UNIT / n_elts;
+	    int splat_start_bit = TREE_INT_CST_LOW (arg1) * splat_elem_size;
+	    tree len = build_int_cst (bitsizetype, splat_elem_size);
+	    tree start = build_int_cst (bitsizetype, splat_start_bit);
+	    splat = tree_vec_extract (gsi, TREE_TYPE (lhs_type), arg0,
+				      len, start);
+	  }
+	/* And finally, build the new vector.  */
+	tree splat_tree = build_vector_from_val (lhs_type, splat);
+	g = gimple_build_assign (lhs, splat_tree);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* vec_mergel (integrals).  */
+    case RS6000_BIF_VMRGLH:
+    case RS6000_BIF_VMRGLW:
+    case RS6000_BIF_XXMRGLW_4SI:
+    case RS6000_BIF_VMRGLB:
+    case RS6000_BIF_VEC_MERGEL_V2DI:
+    case RS6000_BIF_XXMRGLW_4SF:
+    case RS6000_BIF_VEC_MERGEL_V2DF:
+      fold_mergehl_helper (gsi, stmt, 1);
+      return true;
+    /* vec_mergeh (integrals).  */
+    case RS6000_BIF_VMRGHH:
+    case RS6000_BIF_VMRGHW:
+    case RS6000_BIF_XXMRGHW_4SI:
+    case RS6000_BIF_VMRGHB:
+    case RS6000_BIF_VEC_MERGEH_V2DI:
+    case RS6000_BIF_XXMRGHW_4SF:
+    case RS6000_BIF_VEC_MERGEH_V2DF:
+      fold_mergehl_helper (gsi, stmt, 0);
+      return true;
+
+    /* Flavors of vec_mergee.  */
+    case RS6000_BIF_VMRGEW_V4SI:
+    case RS6000_BIF_VMRGEW_V2DI:
+    case RS6000_BIF_VMRGEW_V4SF:
+    case RS6000_BIF_VMRGEW_V2DF:
+      fold_mergeeo_helper (gsi, stmt, 0);
+      return true;
+    /* Flavors of vec_mergeo.  */
+    case RS6000_BIF_VMRGOW_V4SI:
+    case RS6000_BIF_VMRGOW_V2DI:
+    case RS6000_BIF_VMRGOW_V4SF:
+    case RS6000_BIF_VMRGOW_V2DF:
+      fold_mergeeo_helper (gsi, stmt, 1);
+      return true;
+
+    /* d = vec_pack (a, b) */
+    case RS6000_BIF_VPKUDUM:
+    case RS6000_BIF_VPKUHUM:
+    case RS6000_BIF_VPKUWUM:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	arg1 = gimple_call_arg (stmt, 1);
+	lhs = gimple_call_lhs (stmt);
+	gimple *g = gimple_build_assign (lhs, VEC_PACK_TRUNC_EXPR, arg0, arg1);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    /* d = vec_unpackh (a) */
+    /* Note that the UNPACK_{HI,LO}_EXPR used in the gimple_build_assign call
+       in this code is sensitive to endian-ness, and needs to be inverted to
+       handle both LE and BE targets.  */
+    case RS6000_BIF_VUPKHSB:
+    case RS6000_BIF_VUPKHSH:
+    case RS6000_BIF_VUPKHSW:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	lhs = gimple_call_lhs (stmt);
+	if (BYTES_BIG_ENDIAN)
+	  g = gimple_build_assign (lhs, VEC_UNPACK_HI_EXPR, arg0);
+	else
+	  g = gimple_build_assign (lhs, VEC_UNPACK_LO_EXPR, arg0);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+    /* d = vec_unpackl (a) */
+    case RS6000_BIF_VUPKLSB:
+    case RS6000_BIF_VUPKLSH:
+    case RS6000_BIF_VUPKLSW:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	lhs = gimple_call_lhs (stmt);
+	if (BYTES_BIG_ENDIAN)
+	  g = gimple_build_assign (lhs, VEC_UNPACK_LO_EXPR, arg0);
+	else
+	  g = gimple_build_assign (lhs, VEC_UNPACK_HI_EXPR, arg0);
+	gimple_set_location (g, gimple_location (stmt));
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+    /* There is no gimple type corresponding with pixel, so just return.  */
+    case RS6000_BIF_VUPKHPX:
+    case RS6000_BIF_VUPKLPX:
+      return false;
+
+    /* vec_perm.  */
+    case RS6000_BIF_VPERM_16QI:
+    case RS6000_BIF_VPERM_8HI:
+    case RS6000_BIF_VPERM_4SI:
+    case RS6000_BIF_VPERM_2DI:
+    case RS6000_BIF_VPERM_4SF:
+    case RS6000_BIF_VPERM_2DF:
+    case RS6000_BIF_VPERM_16QI_UNS:
+    case RS6000_BIF_VPERM_8HI_UNS:
+    case RS6000_BIF_VPERM_4SI_UNS:
+    case RS6000_BIF_VPERM_2DI_UNS:
+      {
+	arg0 = gimple_call_arg (stmt, 0);
+	arg1 = gimple_call_arg (stmt, 1);
+	tree permute = gimple_call_arg (stmt, 2);
+	lhs = gimple_call_lhs (stmt);
+	location_t loc = gimple_location (stmt);
+	gimple_seq stmts = NULL;
+	// convert arg0 and arg1 to match the type of the permute
+	// for the VEC_PERM_EXPR operation.
+	tree permute_type = (TREE_TYPE (permute));
+	tree arg0_ptype = gimple_build (&stmts, loc, VIEW_CONVERT_EXPR,
+					permute_type, arg0);
+	tree arg1_ptype = gimple_build (&stmts, loc, VIEW_CONVERT_EXPR,
+					permute_type, arg1);
+	tree lhs_ptype = gimple_build (&stmts, loc, VEC_PERM_EXPR,
+				      permute_type, arg0_ptype, arg1_ptype,
+				      permute);
+	// Convert the result back to the desired lhs type upon completion.
+	tree temp = gimple_build (&stmts, loc, VIEW_CONVERT_EXPR,
+				  TREE_TYPE (lhs), lhs_ptype);
+	gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+	g = gimple_build_assign (lhs, temp);
+	gimple_set_location (g, loc);
+	gsi_replace (gsi, g, true);
+	return true;
+      }
+
+    default:
+      if (TARGET_DEBUG_BUILTIN)
+	fprintf (stderr, "gimple builtin intrinsic not matched:%d %s %s\n",
+		 fn_code, fn_name1, fn_name2);
+      break;
+    }
+
+  return false;
+}
+
 /* Expand an expression EXP that calls a built-in function,
    with result going to TARGET if that's convenient
    (and in mode MODE if that's convenient).
@@ -12802,6 +14580,9 @@ rs6000_expand_builtin (tree exp, rtx target, rtx subtarget ATTRIBUTE_UNUSED,
 		       machine_mode mode ATTRIBUTE_UNUSED,
 		       int ignore ATTRIBUTE_UNUSED)
 {
+  if (new_builtins_are_live)
+    return rs6000_expand_new_builtin (exp, target, subtarget, mode, ignore);
+
   tree fndecl = TREE_OPERAND (CALL_EXPR_FN (exp), 0);
   enum rs6000_builtins fcode
     = (enum rs6000_builtins) DECL_MD_FUNCTION_CODE (fndecl);
@@ -13094,6 +14875,1149 @@ rs6000_expand_builtin (tree exp, rtx target, rtx subtarget ATTRIBUTE_UNUSED,
   gcc_unreachable ();
 }
 
+/* Expand ALTIVEC_BUILTIN_MASK_FOR_LOAD.  */
+rtx
+rs6000_expand_ldst_mask (rtx target, tree arg0)
+{
+  int icode2 = BYTES_BIG_ENDIAN ? (int) CODE_FOR_altivec_lvsr_direct
+				: (int) CODE_FOR_altivec_lvsl_direct;
+  machine_mode tmode = insn_data[icode2].operand[0].mode;
+  machine_mode mode = insn_data[icode2].operand[1].mode;
+
+  gcc_assert (TARGET_ALTIVEC);
+
+  gcc_assert (POINTER_TYPE_P (TREE_TYPE (arg0)));
+  rtx op = expand_expr (arg0, NULL_RTX, Pmode, EXPAND_NORMAL);
+  rtx addr = memory_address (mode, op);
+  /* We need to negate the address.  */
+  op = gen_reg_rtx (GET_MODE (addr));
+  emit_insn (gen_rtx_SET (op, gen_rtx_NEG (GET_MODE (addr), addr)));
+  op = gen_rtx_MEM (mode, op);
+
+  if (target == 0
+      || GET_MODE (target) != tmode
+      || !insn_data[icode2].operand[0].predicate (target, tmode))
+    target = gen_reg_rtx (tmode);
+
+  rtx pat = GEN_FCN (icode2) (target, op);
+  if (!pat)
+    return 0;
+  emit_insn (pat);
+
+  return target;
+}
+
+/* Expand the CPU builtin in FCODE and store the result in TARGET.  */
+static rtx
+new_cpu_expand_builtin (enum rs6000_gen_builtins fcode,
+			tree exp ATTRIBUTE_UNUSED, rtx target)
+{
+  /* __builtin_cpu_init () is a nop, so expand to nothing.  */
+  if (fcode == RS6000_BIF_CPU_INIT)
+    return const0_rtx;
+
+  if (target == 0 || GET_MODE (target) != SImode)
+    target = gen_reg_rtx (SImode);
+
+  /* TODO: Factor the #ifdef'd code into a separate function.  */
+#ifdef TARGET_LIBC_PROVIDES_HWCAP_IN_TCB
+  tree arg = TREE_OPERAND (CALL_EXPR_ARG (exp, 0), 0);
+  /* Target clones creates an ARRAY_REF instead of STRING_CST, convert it back
+     to a STRING_CST.  */
+  if (TREE_CODE (arg) == ARRAY_REF
+      && TREE_CODE (TREE_OPERAND (arg, 0)) == STRING_CST
+      && TREE_CODE (TREE_OPERAND (arg, 1)) == INTEGER_CST
+      && compare_tree_int (TREE_OPERAND (arg, 1), 0) == 0)
+    arg = TREE_OPERAND (arg, 0);
+
+  if (TREE_CODE (arg) != STRING_CST)
+    {
+      error ("builtin %qs only accepts a string argument",
+	     rs6000_builtin_info_x[(size_t) fcode].bifname);
+      return const0_rtx;
+    }
+
+  if (fcode == RS6000_BIF_CPU_IS)
+    {
+      const char *cpu = TREE_STRING_POINTER (arg);
+      rtx cpuid = NULL_RTX;
+      for (size_t i = 0; i < ARRAY_SIZE (cpu_is_info); i++)
+	if (strcmp (cpu, cpu_is_info[i].cpu) == 0)
+	  {
+	    /* The CPUID value in the TCB is offset by _DL_FIRST_PLATFORM.  */
+	    cpuid = GEN_INT (cpu_is_info[i].cpuid + _DL_FIRST_PLATFORM);
+	    break;
+	  }
+      if (cpuid == NULL_RTX)
+	{
+	  /* Invalid CPU argument.  */
+	  error ("cpu %qs is an invalid argument to builtin %qs",
+		 cpu, rs6000_builtin_info_x[(size_t) fcode].bifname);
+	  return const0_rtx;
+	}
+
+      rtx platform = gen_reg_rtx (SImode);
+      rtx address = gen_rtx_PLUS (Pmode,
+				  gen_rtx_REG (Pmode, TLS_REGNUM),
+				  GEN_INT (TCB_PLATFORM_OFFSET));
+      rtx tcbmem = gen_const_mem (SImode, address);
+      emit_move_insn (platform, tcbmem);
+      emit_insn (gen_eqsi3 (target, platform, cpuid));
+    }
+  else if (fcode == RS6000_BIF_CPU_SUPPORTS)
+    {
+      const char *hwcap = TREE_STRING_POINTER (arg);
+      rtx mask = NULL_RTX;
+      int hwcap_offset;
+      for (size_t i = 0; i < ARRAY_SIZE (cpu_supports_info); i++)
+	if (strcmp (hwcap, cpu_supports_info[i].hwcap) == 0)
+	  {
+	    mask = GEN_INT (cpu_supports_info[i].mask);
+	    hwcap_offset = TCB_HWCAP_OFFSET (cpu_supports_info[i].id);
+	    break;
+	  }
+      if (mask == NULL_RTX)
+	{
+	  /* Invalid HWCAP argument.  */
+	  error ("%s %qs is an invalid argument to builtin %qs",
+		 "hwcap", hwcap,
+		 rs6000_builtin_info_x[(size_t) fcode].bifname);
+	  return const0_rtx;
+	}
+
+      rtx tcb_hwcap = gen_reg_rtx (SImode);
+      rtx address = gen_rtx_PLUS (Pmode,
+				  gen_rtx_REG (Pmode, TLS_REGNUM),
+				  GEN_INT (hwcap_offset));
+      rtx tcbmem = gen_const_mem (SImode, address);
+      emit_move_insn (tcb_hwcap, tcbmem);
+      rtx scratch1 = gen_reg_rtx (SImode);
+      emit_insn (gen_rtx_SET (scratch1,
+			      gen_rtx_AND (SImode, tcb_hwcap, mask)));
+      rtx scratch2 = gen_reg_rtx (SImode);
+      emit_insn (gen_eqsi3 (scratch2, scratch1, const0_rtx));
+      emit_insn (gen_rtx_SET (target,
+			      gen_rtx_XOR (SImode, scratch2, const1_rtx)));
+    }
+  else
+    gcc_unreachable ();
+
+  /* Record that we have expanded a CPU builtin, so that we can later
+     emit a reference to the special symbol exported by LIBC to ensure we
+     do not link against an old LIBC that doesn't support this feature.  */
+  cpu_builtin_p = true;
+
+#else
+  warning (0, "builtin %qs needs GLIBC (2.23 and newer) that exports hardware "
+	   "capability bits", rs6000_builtin_info_x[(size_t) fcode].bifname);
+
+  /* For old LIBCs, always return FALSE.  */
+  emit_move_insn (target, GEN_INT (0));
+#endif /* TARGET_LIBC_PROVIDES_HWCAP_IN_TCB */
+
+  return target;
+}
+
+/* For the element-reversing load/store built-ins, produce the correct
+   insn_code depending on the target endianness.  */
+static insn_code
+elemrev_icode (rs6000_gen_builtins fcode)
+{
+  switch (fcode)
+    {
+    case RS6000_BIF_ST_ELEMREV_V1TI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v1ti
+			      : CODE_FOR_vsx_st_elemrev_v1ti;
+
+    case RS6000_BIF_ST_ELEMREV_V2DF:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v2df
+			      : CODE_FOR_vsx_st_elemrev_v2df;
+
+    case RS6000_BIF_ST_ELEMREV_V2DI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v2di
+			      : CODE_FOR_vsx_st_elemrev_v2di;
+
+    case RS6000_BIF_ST_ELEMREV_V4SF:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v4sf
+			      : CODE_FOR_vsx_st_elemrev_v4sf;
+
+    case RS6000_BIF_ST_ELEMREV_V4SI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v4si
+			      : CODE_FOR_vsx_st_elemrev_v4si;
+
+    case RS6000_BIF_ST_ELEMREV_V8HI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v8hi
+			      : CODE_FOR_vsx_st_elemrev_v8hi;
+
+    case RS6000_BIF_ST_ELEMREV_V16QI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_store_v16qi
+			      : CODE_FOR_vsx_st_elemrev_v16qi;
+
+    case RS6000_BIF_LD_ELEMREV_V2DF:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v2df
+			      : CODE_FOR_vsx_ld_elemrev_v2df;
+
+    case RS6000_BIF_LD_ELEMREV_V1TI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v1ti
+			      : CODE_FOR_vsx_ld_elemrev_v1ti;
+
+    case RS6000_BIF_LD_ELEMREV_V2DI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v2di
+			      : CODE_FOR_vsx_ld_elemrev_v2di;
+
+    case RS6000_BIF_LD_ELEMREV_V4SF:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v4sf
+			      : CODE_FOR_vsx_ld_elemrev_v4sf;
+
+    case RS6000_BIF_LD_ELEMREV_V4SI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v4si
+			      : CODE_FOR_vsx_ld_elemrev_v4si;
+
+    case RS6000_BIF_LD_ELEMREV_V8HI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v8hi
+			      : CODE_FOR_vsx_ld_elemrev_v8hi;
+
+    case RS6000_BIF_LD_ELEMREV_V16QI:
+      return BYTES_BIG_ENDIAN ? CODE_FOR_vsx_load_v16qi
+			      : CODE_FOR_vsx_ld_elemrev_v16qi;
+    default:
+      ;
+    }
+
+  gcc_unreachable ();
+}
+
+/* Expand an AltiVec vector load builtin, and return the expanded rtx.  */
+static rtx
+ldv_expand_builtin (rtx target, insn_code icode, rtx *op, machine_mode tmode)
+{
+  if (target == 0
+      || GET_MODE (target) != tmode
+      || !insn_data[icode].operand[0].predicate (target, tmode))
+    target = gen_reg_rtx (tmode);
+
+  op[1] = copy_to_mode_reg (Pmode, op[1]);
+
+  /* These CELL built-ins use BLKmode instead of tmode for historical
+     (i.e., unknown) reasons.  TODO: Is this necessary?  */
+  bool blk = (icode == CODE_FOR_altivec_lvlx
+	      || icode == CODE_FOR_altivec_lvlxl
+	      || icode == CODE_FOR_altivec_lvrx
+	      || icode == CODE_FOR_altivec_lvrxl);
+
+  /* For LVX, express the RTL accurately by ANDing the address with -16.
+     LVXL and LVE*X expand to use UNSPECs to hide their special behavior,
+     so the raw address is fine.  */
+  /* TODO: That statement seems wrong, as the UNSPECs don't surround the
+     memory expression, so a latent bug may lie here.  The &-16 is likely
+     needed for all VMX-style loads.  */
+  if (icode == CODE_FOR_altivec_lvx_v1ti
+      || icode == CODE_FOR_altivec_lvx_v2df
+      || icode == CODE_FOR_altivec_lvx_v2di
+      || icode == CODE_FOR_altivec_lvx_v4sf
+      || icode == CODE_FOR_altivec_lvx_v4si
+      || icode == CODE_FOR_altivec_lvx_v8hi
+      || icode == CODE_FOR_altivec_lvx_v16qi)
+    {
+      rtx rawaddr;
+      if (op[0] == const0_rtx)
+	rawaddr = op[1];
+      else
+	{
+	  op[0] = copy_to_mode_reg (Pmode, op[0]);
+	  rawaddr = gen_rtx_PLUS (Pmode, op[1], op[0]);
+	}
+      rtx addr = gen_rtx_AND (Pmode, rawaddr, gen_rtx_CONST_INT (Pmode, -16));
+      addr = gen_rtx_MEM (blk ? BLKmode : tmode, addr);
+
+      emit_insn (gen_rtx_SET (target, addr));
+    }
+  else
+    {
+      rtx addr;
+      if (op[0] == const0_rtx)
+	addr = gen_rtx_MEM (blk ? BLKmode : tmode, op[1]);
+      else
+	{
+	  op[0] = copy_to_mode_reg (Pmode, op[0]);
+	  addr = gen_rtx_MEM (blk ? BLKmode : tmode,
+			      gen_rtx_PLUS (Pmode, op[1], op[0]));
+	}
+
+      rtx pat = GEN_FCN (icode) (target, addr);
+      if (!pat)
+	return 0;
+      emit_insn (pat);
+    }
+
+  return target;
+}
+
+/* Expand a builtin function that loads a scalar into a vector register
+   with sign extension, and return the expanded rtx.  */
+static rtx
+lxvrse_expand_builtin (rtx target, insn_code icode, rtx *op,
+		       machine_mode tmode, machine_mode smode)
+{
+  rtx pat, addr;
+  op[1] = copy_to_mode_reg (Pmode, op[1]);
+
+  if (op[0] == const0_rtx)
+    addr = gen_rtx_MEM (tmode, op[1]);
+  else
+    {
+      op[0] = copy_to_mode_reg (Pmode, op[0]);
+      addr = gen_rtx_MEM (smode,
+			  gen_rtx_PLUS (Pmode, op[1], op[0]));
+    }
+
+  rtx discratch = gen_reg_rtx (V2DImode);
+  rtx tiscratch = gen_reg_rtx (TImode);
+
+  /* Emit the lxvr*x insn.  */
+  pat = GEN_FCN (icode) (tiscratch, addr);
+  if (!pat)
+    return 0;
+  emit_insn (pat);
+
+  /* Emit a sign extension from V16QI,V8HI,V4SI to V2DI.  */
+  rtx temp1;
+  if (icode == CODE_FOR_vsx_lxvrbx)
+    {
+      temp1  = simplify_gen_subreg (V16QImode, tiscratch, TImode, 0);
+      emit_insn (gen_vsx_sign_extend_qi_v2di (discratch, temp1));
+    }
+  else if (icode == CODE_FOR_vsx_lxvrhx)
+    {
+      temp1  = simplify_gen_subreg (V8HImode, tiscratch, TImode, 0);
+      emit_insn (gen_vsx_sign_extend_hi_v2di (discratch, temp1));
+    }
+  else if (icode == CODE_FOR_vsx_lxvrwx)
+    {
+      temp1  = simplify_gen_subreg (V4SImode, tiscratch, TImode, 0);
+      emit_insn (gen_vsx_sign_extend_si_v2di (discratch, temp1));
+    }
+  else if (icode == CODE_FOR_vsx_lxvrdx)
+    discratch = simplify_gen_subreg (V2DImode, tiscratch, TImode, 0);
+  else
+    gcc_unreachable ();
+
+  /* Emit the sign extension from V2DI (double) to TI (quad).  */
+  rtx temp2 = simplify_gen_subreg (TImode, discratch, V2DImode, 0);
+  emit_insn (gen_extendditi2_vector (target, temp2));
+
+  return target;
+}
+
+/* Expand a builtin function that loads a scalar into a vector register
+   with zero extension, and return the expanded rtx.  */
+static rtx
+lxvrze_expand_builtin (rtx target, insn_code icode, rtx *op,
+		       machine_mode tmode, machine_mode smode)
+{
+  rtx pat, addr;
+  op[1] = copy_to_mode_reg (Pmode, op[1]);
+
+  if (op[0] == const0_rtx)
+    addr = gen_rtx_MEM (tmode, op[1]);
+  else
+    {
+      op[0] = copy_to_mode_reg (Pmode, op[0]);
+      addr = gen_rtx_MEM (smode,
+			  gen_rtx_PLUS (Pmode, op[1], op[0]));
+    }
+
+  pat = GEN_FCN (icode) (target, addr);
+  if (!pat)
+    return 0;
+  emit_insn (pat);
+  return target;
+}
+
+/* Expand an AltiVec vector store builtin, and return the expanded rtx.  */
+static rtx
+stv_expand_builtin (insn_code icode, rtx *op,
+		    machine_mode tmode, machine_mode smode)
+{
+  op[2] = copy_to_mode_reg (Pmode, op[2]);
+
+  /* For STVX, express the RTL accurately by ANDing the address with -16.
+     STVXL and STVE*X expand to use UNSPECs to hide their special behavior,
+     so the raw address is fine.  */
+  /* TODO: That statement seems wrong, as the UNSPECs don't surround the
+     memory expression, so a latent bug may lie here.  The &-16 is likely
+     needed for all VMX-style stores.  */
+  if (icode == CODE_FOR_altivec_stvx_v2df
+      || icode == CODE_FOR_altivec_stvx_v2di
+      || icode == CODE_FOR_altivec_stvx_v4sf
+      || icode == CODE_FOR_altivec_stvx_v4si
+      || icode == CODE_FOR_altivec_stvx_v8hi
+      || icode == CODE_FOR_altivec_stvx_v16qi)
+    {
+      rtx rawaddr;
+      if (op[1] == const0_rtx)
+	rawaddr = op[2];
+      else
+	{
+	  op[1] = copy_to_mode_reg (Pmode, op[1]);
+	  rawaddr = gen_rtx_PLUS (Pmode, op[2], op[1]);
+	}
+
+      rtx addr = gen_rtx_AND (Pmode, rawaddr, gen_rtx_CONST_INT (Pmode, -16));
+      addr = gen_rtx_MEM (tmode, addr);
+      op[0] = copy_to_mode_reg (tmode, op[0]);
+      emit_insn (gen_rtx_SET (addr, op[0]));
+    }
+  else if (icode == CODE_FOR_vsx_stxvrbx
+	   || icode == CODE_FOR_vsx_stxvrhx
+	   || icode == CODE_FOR_vsx_stxvrwx
+	   || icode == CODE_FOR_vsx_stxvrdx)
+    {
+      rtx truncrtx = gen_rtx_TRUNCATE (tmode, op[0]);
+      op[0] = copy_to_mode_reg (E_TImode, truncrtx);
+
+      rtx addr;
+      if (op[1] == const0_rtx)
+	addr = gen_rtx_MEM (Pmode, op[2]);
+      else
+	{
+	  op[1] = copy_to_mode_reg (Pmode, op[1]);
+	  addr = gen_rtx_MEM (tmode, gen_rtx_PLUS (Pmode, op[2], op[1]));
+	}
+      rtx pat = GEN_FCN (icode) (addr, op[0]);
+      if (pat)
+	emit_insn (pat);
+    }
+  else
+    {
+      if (!insn_data[icode].operand[1].predicate (op[0], smode))
+	op[0] = copy_to_mode_reg (smode, op[0]);
+
+      rtx addr;
+      if (op[1] == const0_rtx)
+	addr = gen_rtx_MEM (tmode, op[2]);
+      else
+	{
+	  op[1] = copy_to_mode_reg (Pmode, op[1]);
+	  addr = gen_rtx_MEM (tmode, gen_rtx_PLUS (Pmode, op[2], op[1]));
+	}
+
+      rtx pat = GEN_FCN (icode) (addr, op[0]);
+      if (pat)
+	emit_insn (pat);
+    }
+
+  return NULL_RTX;
+}
+
+/* Expand the MMA built-in in EXP, and return it.  */
+static rtx
+new_mma_expand_builtin (tree exp, rtx target, insn_code icode,
+			rs6000_gen_builtins fcode)
+{
+  tree fndecl = TREE_OPERAND (CALL_EXPR_FN (exp), 0);
+  bool void_func = TREE_TYPE (TREE_TYPE (fndecl)) == void_type_node;
+  machine_mode tmode = VOIDmode;
+  rtx op[MAX_MMA_OPERANDS];
+  unsigned nopnds = 0;
+
+  if (!void_func)
+    {
+      tmode = insn_data[icode].operand[0].mode;
+      if (!(target
+	    && GET_MODE (target) == tmode
+	    && insn_data[icode].operand[0].predicate (target, tmode)))
+	target = gen_reg_rtx (tmode);
+      op[nopnds++] = target;
+    }
+  else
+    target = const0_rtx;
+
+  call_expr_arg_iterator iter;
+  tree arg;
+  FOR_EACH_CALL_EXPR_ARG (arg, iter, exp)
+    {
+      if (arg == error_mark_node)
+	return const0_rtx;
+
+      rtx opnd;
+      const struct insn_operand_data *insn_op;
+      insn_op = &insn_data[icode].operand[nopnds];
+      if (TREE_CODE (arg) == ADDR_EXPR
+	  && MEM_P (DECL_RTL (TREE_OPERAND (arg, 0))))
+	opnd = DECL_RTL (TREE_OPERAND (arg, 0));
+      else
+	opnd = expand_normal (arg);
+
+      if (!insn_op->predicate (opnd, insn_op->mode))
+	{
+	  /* TODO: This use of constraints needs explanation.  */
+	  if (!strcmp (insn_op->constraint, "n"))
+	    {
+	      if (!CONST_INT_P (opnd))
+		error ("argument %d must be an unsigned literal", nopnds);
+	      else
+		error ("argument %d is an unsigned literal that is "
+		       "out of range", nopnds);
+	      return const0_rtx;
+	    }
+	  opnd = copy_to_mode_reg (insn_op->mode, opnd);
+	}
+
+      /* Some MMA instructions have INOUT accumulator operands, so force
+	 their target register to be the same as their input register.  */
+      if (!void_func
+	  && nopnds == 1
+	  && !strcmp (insn_op->constraint, "0")
+	  && insn_op->mode == tmode
+	  && REG_P (opnd)
+	  && insn_data[icode].operand[0].predicate (opnd, tmode))
+	target = op[0] = opnd;
+
+      op[nopnds++] = opnd;
+    }
+
+  rtx pat;
+  switch (nopnds)
+    {
+    case 1:
+      pat = GEN_FCN (icode) (op[0]);
+      break;
+    case 2:
+      pat = GEN_FCN (icode) (op[0], op[1]);
+      break;
+    case 3:
+      /* The ASSEMBLE builtin source operands are reversed in little-endian
+	 mode, so reorder them.  */
+      if (fcode == RS6000_BIF_ASSEMBLE_PAIR_V_INTERNAL && !WORDS_BIG_ENDIAN)
+	std::swap (op[1], op[2]);
+      pat = GEN_FCN (icode) (op[0], op[1], op[2]);
+      break;
+    case 4:
+      pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3]);
+      break;
+    case 5:
+      /* The ASSEMBLE builtin source operands are reversed in little-endian
+	 mode, so reorder them.  */
+      if (fcode == RS6000_BIF_ASSEMBLE_ACC_INTERNAL && !WORDS_BIG_ENDIAN)
+	{
+	  std::swap (op[1], op[4]);
+	  std::swap (op[2], op[3]);
+	}
+      pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4]);
+      break;
+    case 6:
+      pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4], op[5]);
+      break;
+    case 7:
+      pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4], op[5], op[6]);
+      break;
+    default:
+      gcc_unreachable ();
+    }
+
+  if (!pat)
+    return NULL_RTX;
+
+  emit_insn (pat);
+  return target;
+}
+
+/* Return the appropriate SPR number associated with the given builtin.  */
+static inline HOST_WIDE_INT
+new_htm_spr_num (enum rs6000_gen_builtins code)
+{
+  if (code == RS6000_BIF_GET_TFHAR
+      || code == RS6000_BIF_SET_TFHAR)
+    return TFHAR_SPR;
+  else if (code == RS6000_BIF_GET_TFIAR
+	   || code == RS6000_BIF_SET_TFIAR)
+    return TFIAR_SPR;
+  else if (code == RS6000_BIF_GET_TEXASR
+	   || code == RS6000_BIF_SET_TEXASR)
+    return TEXASR_SPR;
+  gcc_assert (code == RS6000_BIF_GET_TEXASRU
+	      || code == RS6000_BIF_SET_TEXASRU);
+  return TEXASRU_SPR;
+}
+
+/* Expand the HTM builtin in EXP and store the result in TARGET.
+   Return the expanded rtx.  */
+static rtx
+new_htm_expand_builtin (bifdata *bifaddr, rs6000_gen_builtins fcode,
+			tree exp, rtx target)
+{
+  if (!TARGET_POWERPC64
+      && (fcode == RS6000_BIF_TABORTDC
+	  || fcode == RS6000_BIF_TABORTDCI))
+    {
+      error ("builtin %qs is only valid in 64-bit mode", bifaddr->bifname);
+      return const0_rtx;
+    }
+
+  tree fndecl = TREE_OPERAND (CALL_EXPR_FN (exp), 0);
+  bool nonvoid = TREE_TYPE (TREE_TYPE (fndecl)) != void_type_node;
+  bool uses_spr = bif_is_htmspr (*bifaddr);
+  insn_code icode = bifaddr->icode;
+
+  if (uses_spr)
+    icode = rs6000_htm_spr_icode (nonvoid);
+
+  rtx op[MAX_HTM_OPERANDS];
+  int nopnds = 0;
+  const insn_operand_data *insn_op = &insn_data[icode].operand[0];
+
+  if (nonvoid)
+    {
+      machine_mode tmode = (uses_spr) ? insn_op->mode : E_SImode;
+      if (!target
+	  || GET_MODE (target) != tmode
+	  || (uses_spr && !insn_op->predicate (target, tmode)))
+	target = gen_reg_rtx (tmode);
+      if (uses_spr)
+	op[nopnds++] = target;
+    }
+
+  tree arg;
+  call_expr_arg_iterator iter;
+
+  FOR_EACH_CALL_EXPR_ARG (arg, iter, exp)
+    {
+      if (arg == error_mark_node || nopnds >= MAX_HTM_OPERANDS)
+	return const0_rtx;
+
+      insn_op = &insn_data[icode].operand[nopnds];
+      op[nopnds] = expand_normal (arg);
+
+      if (!insn_op->predicate (op[nopnds], insn_op->mode))
+	{
+	  /* TODO: This use of constraints could use explanation.
+	     This happens a couple of places, perhaps make that a
+	     function to document what's happening.  */
+	  if (!strcmp (insn_op->constraint, "n"))
+	    {
+	      int arg_num = nonvoid ? nopnds : nopnds + 1;
+	      if (!CONST_INT_P (op[nopnds]))
+		error ("argument %d must be an unsigned literal", arg_num);
+	      else
+		error ("argument %d is an unsigned literal that is "
+		       "out of range", arg_num);
+	      return const0_rtx;
+	    }
+	  op[nopnds] = copy_to_mode_reg (insn_op->mode, op[nopnds]);
+	}
+
+      nopnds++;
+    }
+
+  /* Handle the builtins for extended mnemonics.  These accept
+     no arguments, but map to builtins that take arguments.  */
+  switch (fcode)
+    {
+    case RS6000_BIF_TENDALL:  /* Alias for: tend. 1  */
+    case RS6000_BIF_TRESUME:  /* Alias for: tsr. 1  */
+      op[nopnds++] = GEN_INT (1);
+      break;
+    case RS6000_BIF_TSUSPEND: /* Alias for: tsr. 0  */
+      op[nopnds++] = GEN_INT (0);
+      break;
+    default:
+      break;
+    }
+
+  /* If this builtin accesses SPRs, then pass in the appropriate
+     SPR number and SPR regno as the last two operands.  */
+  rtx cr = NULL_RTX;
+  if (uses_spr)
+    {
+      machine_mode mode = TARGET_POWERPC64 ? DImode : SImode;
+      op[nopnds++] = gen_rtx_CONST_INT (mode, new_htm_spr_num (fcode));
+    }
+  /* If this builtin accesses a CR field, then pass in a scratch
+     CR field as the last operand.  */
+  else if (bif_is_htmcr (*bifaddr))
+    {
+      cr = gen_reg_rtx (CCmode);
+      op[nopnds++] = cr;
+    }
+
+  rtx pat;
+  switch (nopnds)
+    {
+    case 1:
+      pat = GEN_FCN (icode) (op[0]);
+      break;
+    case 2:
+      pat = GEN_FCN (icode) (op[0], op[1]);
+      break;
+    case 3:
+      pat = GEN_FCN (icode) (op[0], op[1], op[2]);
+      break;
+    case 4:
+      pat = GEN_FCN (icode) (op[0], op[1], op[2], op[3]);
+      break;
+    default:
+      gcc_unreachable ();
+    }
+  if (!pat)
+    return NULL_RTX;
+  emit_insn (pat);
+
+  if (bif_is_htmcr (*bifaddr))
+    {
+      if (fcode == RS6000_BIF_TBEGIN)
+	{
+	  /* Emit code to set TARGET to true or false depending on
+	     whether the tbegin. instruction succeeded or failed
+	     to start a transaction.  We do this by placing the 1's
+	     complement of CR's EQ bit into TARGET.  */
+	  rtx scratch = gen_reg_rtx (SImode);
+	  emit_insn (gen_rtx_SET (scratch,
+				  gen_rtx_EQ (SImode, cr,
+					      const0_rtx)));
+	  emit_insn (gen_rtx_SET (target,
+				  gen_rtx_XOR (SImode, scratch,
+					       GEN_INT (1))));
+	}
+      else
+	{
+	  /* Emit code to copy the 4-bit condition register field
+	     CR into the least significant end of register TARGET.  */
+	  rtx scratch1 = gen_reg_rtx (SImode);
+	  rtx scratch2 = gen_reg_rtx (SImode);
+	  rtx subreg = simplify_gen_subreg (CCmode, scratch1, SImode, 0);
+	  emit_insn (gen_movcc (subreg, cr));
+	  emit_insn (gen_lshrsi3 (scratch2, scratch1, GEN_INT (28)));
+	  emit_insn (gen_andsi3 (target, scratch2, GEN_INT (0xf)));
+	}
+    }
+
+  if (nonvoid)
+    return target;
+  return const0_rtx;
+}
+
+/* Expand an expression EXP that calls a built-in function,
+   with result going to TARGET if that's convenient
+   (and in mode MODE if that's convenient).
+   SUBTARGET may be used as the target for computing one of EXP's operands.
+   IGNORE is nonzero if the value is to be ignored.
+   Use the new builtin infrastructure.  */
+static rtx
+rs6000_expand_new_builtin (tree exp, rtx target,
+			   rtx /* subtarget */,
+			   machine_mode /* mode */,
+			   int ignore)
+{
+  tree fndecl = TREE_OPERAND (CALL_EXPR_FN (exp), 0);
+  enum rs6000_gen_builtins fcode
+    = (enum rs6000_gen_builtins) DECL_MD_FUNCTION_CODE (fndecl);
+  size_t uns_fcode = (size_t)fcode;
+  enum insn_code icode = rs6000_builtin_info_x[uns_fcode].icode;
+
+  /* TODO: The following commentary and code is inherited from the original
+     builtin processing code.  The commentary is a bit confusing, with the
+     intent being that KFmode is always IEEE-128, IFmode is always IBM
+     double-double, and TFmode is the current long double.  The code is
+     confusing in that it converts from KFmode to TFmode pattern names,
+     when the other direction is more intuitive.  Try to address this.  */
+
+  /* We have two different modes (KFmode, TFmode) that are the IEEE
+     128-bit floating point type, depending on whether long double is the
+     IBM extended double (KFmode) or long double is IEEE 128-bit (TFmode).
+     It is simpler if we only define one variant of the built-in function,
+     and switch the code when defining it, rather than defining two built-
+     ins and using the overload table in rs6000-c.c to switch between the
+     two.  If we don't have the proper assembler, don't do this switch
+     because CODE_FOR_*kf* and CODE_FOR_*tf* will be CODE_FOR_nothing.  */
+  if (FLOAT128_IEEE_P (TFmode))
+    switch (icode)
+      {
+      case CODE_FOR_sqrtkf2_odd:
+	icode = CODE_FOR_sqrttf2_odd;
+	break;
+      case CODE_FOR_trunckfdf2_odd:
+	icode = CODE_FOR_trunctfdf2_odd;
+	break;
+      case CODE_FOR_addkf3_odd:
+	icode = CODE_FOR_addtf3_odd;
+	break;
+      case CODE_FOR_subkf3_odd:
+	icode = CODE_FOR_subtf3_odd;
+	break;
+      case CODE_FOR_mulkf3_odd:
+	icode = CODE_FOR_multf3_odd;
+	break;
+      case CODE_FOR_divkf3_odd:
+	icode = CODE_FOR_divtf3_odd;
+	break;
+      case CODE_FOR_fmakf4_odd:
+	icode = CODE_FOR_fmatf4_odd;
+	break;
+      case CODE_FOR_xsxexpqp_kf:
+	icode = CODE_FOR_xsxexpqp_tf;
+	break;
+      case CODE_FOR_xsxsigqp_kf:
+	icode = CODE_FOR_xsxsigqp_tf;
+	break;
+      case CODE_FOR_xststdcnegqp_kf:
+	icode = CODE_FOR_xststdcnegqp_tf;
+	break;
+      case CODE_FOR_xsiexpqp_kf:
+	icode = CODE_FOR_xsiexpqp_tf;
+	break;
+      case CODE_FOR_xsiexpqpf_kf:
+	icode = CODE_FOR_xsiexpqpf_tf;
+	break;
+      case CODE_FOR_xststdcqp_kf:
+	icode = CODE_FOR_xststdcqp_tf;
+	break;
+      case CODE_FOR_xscmpexpqp_eq_kf:
+	icode = CODE_FOR_xscmpexpqp_eq_tf;
+	break;
+      case CODE_FOR_xscmpexpqp_lt_kf:
+	icode = CODE_FOR_xscmpexpqp_lt_tf;
+	break;
+      case CODE_FOR_xscmpexpqp_gt_kf:
+	icode = CODE_FOR_xscmpexpqp_gt_tf;
+	break;
+      case CODE_FOR_xscmpexpqp_unordered_kf:
+	icode = CODE_FOR_xscmpexpqp_unordered_tf;
+	break;
+      default:
+	break;
+      }
+
+  /* In case of "#pragma target" changes, we initialize all builtins
+     but check for actual availability now, during expand time.  For
+     invalid builtins, generate a normal call.  */
+  bifdata *bifaddr = &rs6000_builtin_info_x[uns_fcode];
+  bif_enable e = bifaddr->enable;
+
+  if (!(e == ENB_ALWAYS
+	|| (e == ENB_P5         && TARGET_POPCNTB)
+	|| (e == ENB_P6         && TARGET_CMPB)
+	|| (e == ENB_ALTIVEC    && TARGET_ALTIVEC)
+	|| (e == ENB_CELL       && TARGET_ALTIVEC
+				&& rs6000_cpu == PROCESSOR_CELL)
+	|| (e == ENB_VSX        && TARGET_VSX)
+	|| (e == ENB_P7         && TARGET_POPCNTD)
+	|| (e == ENB_P7_64      && TARGET_POPCNTD
+				&& TARGET_POWERPC64)
+	|| (e == ENB_P8         && TARGET_DIRECT_MOVE)
+	|| (e == ENB_P8V        && TARGET_P8_VECTOR)
+	|| (e == ENB_P9         && TARGET_MODULO)
+	|| (e == ENB_P9_64      && TARGET_MODULO
+				&& TARGET_POWERPC64)
+	|| (e == ENB_P9V        && TARGET_P9_VECTOR)
+	|| (e == ENB_IEEE128_HW && TARGET_FLOAT128_HW)
+	|| (e == ENB_DFP        && TARGET_DFP)
+	|| (e == ENB_CRYPTO     && TARGET_CRYPTO)
+	|| (e == ENB_HTM        && TARGET_HTM)
+	|| (e == ENB_P10        && TARGET_POWER10)
+	|| (e == ENB_P10_64     && TARGET_POWER10
+				&& TARGET_POWERPC64)
+	|| (e == ENB_MMA        && TARGET_MMA)))
+    {
+      rs6000_invalid_new_builtin (fcode);
+      return expand_call (exp, target, ignore);
+    }
+
+  if (bif_is_nosoft (*bifaddr)
+      && rs6000_isa_flags & OPTION_MASK_SOFT_FLOAT)
+    {
+      error ("%<%s%> not supported with %<-msoft-float%>",
+	     bifaddr->bifname);
+      return const0_rtx;
+    }
+
+  if (bif_is_no32bit (*bifaddr) && TARGET_32BIT)
+    fatal_error (input_location,
+		 "%<%s%> is not supported in 32-bit mode",
+		 bifaddr->bifname);
+
+  if (bif_is_cpu (*bifaddr))
+    return new_cpu_expand_builtin (fcode, exp, target);
+
+  if (bif_is_init (*bifaddr))
+    return altivec_expand_vec_init_builtin (TREE_TYPE (exp), exp, target);
+
+  if (bif_is_set (*bifaddr))
+    return altivec_expand_vec_set_builtin (exp);
+
+  if (bif_is_extract (*bifaddr))
+    return altivec_expand_vec_ext_builtin (exp, target);
+
+  if (bif_is_predicate (*bifaddr))
+    return altivec_expand_predicate_builtin (icode, exp, target);
+
+  if (bif_is_htm (*bifaddr))
+    return new_htm_expand_builtin (bifaddr, fcode, exp, target);
+
+  if (bif_is_32bit (*bifaddr) && TARGET_32BIT)
+    {
+      if (fcode == RS6000_BIF_MFTB)
+	icode = CODE_FOR_rs6000_mftb_si;
+      else
+	gcc_unreachable ();
+    }
+
+  if (bif_is_endian (*bifaddr) && BYTES_BIG_ENDIAN)
+    {
+      if (fcode == RS6000_BIF_LD_ELEMREV_V1TI)
+	icode = CODE_FOR_vsx_load_v1ti;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V2DF)
+	icode = CODE_FOR_vsx_load_v2df;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V2DI)
+	icode = CODE_FOR_vsx_load_v2di;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V4SF)
+	icode = CODE_FOR_vsx_load_v4sf;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V4SI)
+	icode = CODE_FOR_vsx_load_v4si;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V8HI)
+	icode = CODE_FOR_vsx_load_v8hi;
+      else if (fcode == RS6000_BIF_LD_ELEMREV_V16QI)
+	icode = CODE_FOR_vsx_load_v16qi;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V1TI)
+	icode = CODE_FOR_vsx_store_v1ti;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V2DF)
+	icode = CODE_FOR_vsx_store_v2df;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V2DI)
+	icode = CODE_FOR_vsx_store_v2di;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V4SF)
+	icode = CODE_FOR_vsx_store_v4sf;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V4SI)
+	icode = CODE_FOR_vsx_store_v4si;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V8HI)
+	icode = CODE_FOR_vsx_store_v8hi;
+      else if (fcode == RS6000_BIF_ST_ELEMREV_V16QI)
+	icode = CODE_FOR_vsx_store_v16qi;
+      else
+	gcc_unreachable ();
+    }
+
+
+  /* TRUE iff the built-in function returns void.  */
+  bool void_func = TREE_TYPE (TREE_TYPE (fndecl)) == void_type_node;
+  /* Position of first argument (0 for void-returning functions, else 1).  */
+  int k;
+  /* Modes for the return value, if any, and arguments.  */
+  const int MAX_BUILTIN_ARGS = 6;
+  machine_mode mode[MAX_BUILTIN_ARGS + 1];
+
+  if (void_func)
+    k = 0;
+  else
+    {
+      k = 1;
+      mode[0] = insn_data[icode].operand[0].mode;
+    }
+
+  /* Tree expressions for each argument.  */
+  tree arg[MAX_BUILTIN_ARGS];
+  /* RTL expressions for each argument.  */
+  rtx op[MAX_BUILTIN_ARGS];
+
+  int nargs = bifaddr->nargs;
+  gcc_assert (nargs <= MAX_BUILTIN_ARGS);
+
+
+  for (int i = 0; i < nargs; i++)
+    {
+      arg[i] = CALL_EXPR_ARG (exp, i);
+      if (arg[i] == error_mark_node)
+	return const0_rtx;
+      STRIP_NOPS (arg[i]);
+      op[i] = expand_normal (arg[i]);
+      /* We have a couple of pesky patterns that don't specify the mode...  */
+      mode[i+k] = insn_data[icode].operand[i+k].mode;
+      if (!mode[i+k])
+	mode[i+k] = Pmode;
+    }
+
+  /* Check for restricted constant arguments.  */
+  for (int i = 0; i < 2; i++)
+    {
+      switch (bifaddr->restr[i])
+	{
+	case RES_BITS:
+	  {
+	    size_t mask = 1;
+	    mask <<= bifaddr->restr_val1[i];
+	    mask--;
+	    tree restr_arg = arg[bifaddr->restr_opnd[i] - 1];
+	    STRIP_NOPS (restr_arg);
+	    if (!(TREE_CODE (restr_arg) == INTEGER_CST
+		  && (TREE_INT_CST_LOW (restr_arg) & ~mask) == 0))
+	      {
+		error ("argument %d must be a %d-bit unsigned literal",
+		       bifaddr->restr_opnd[i], bifaddr->restr_val1[i]);
+		return CONST0_RTX (mode[0]);
+	      }
+	    break;
+	  }
+	case RES_RANGE:
+	  {
+	    tree restr_arg = arg[bifaddr->restr_opnd[i] - 1];
+	    STRIP_NOPS (restr_arg);
+	    if (!(TREE_CODE (restr_arg) == INTEGER_CST
+		  && IN_RANGE (tree_to_shwi (restr_arg),
+			       bifaddr->restr_val1[i],
+			       bifaddr->restr_val2[i])))
+	      {
+		error ("argument %d must be a literal between %d and %d,"
+		       " inclusive",
+		       bifaddr->restr_opnd[i], bifaddr->restr_val1[i],
+		       bifaddr->restr_val2[i]);
+		return CONST0_RTX (mode[0]);
+	      }
+	    break;
+	  }
+	case RES_VAR_RANGE:
+	  {
+	    tree restr_arg = arg[bifaddr->restr_opnd[i] - 1];
+	    STRIP_NOPS (restr_arg);
+	    if (TREE_CODE (restr_arg) == INTEGER_CST
+		&& !IN_RANGE (tree_to_shwi (restr_arg),
+			      bifaddr->restr_val1[i],
+			      bifaddr->restr_val2[i]))
+	      {
+		error ("argument %d must be a variable or a literal "
+		       "between %d and %d, inclusive",
+		       bifaddr->restr_opnd[i], bifaddr->restr_val1[i],
+		       bifaddr->restr_val2[i]);
+		return CONST0_RTX (mode[0]);
+	      }
+	    break;
+	  }
+	case RES_VALUES:
+	  {
+	    tree restr_arg = arg[bifaddr->restr_opnd[i] - 1];
+	    STRIP_NOPS (restr_arg);
+	    if (!(TREE_CODE (restr_arg) == INTEGER_CST
+		  && (tree_to_shwi (restr_arg) == bifaddr->restr_val1[i]
+		      || tree_to_shwi (restr_arg) == bifaddr->restr_val2[i])))
+	      {
+		error ("argument %d must be either a literal %d or a "
+		       "literal %d",
+		       bifaddr->restr_opnd[i], bifaddr->restr_val1[i],
+		       bifaddr->restr_val2[i]);
+		return CONST0_RTX (mode[0]);
+	      }
+	    break;
+	  }
+	default:
+	case RES_NONE:
+	  break;
+	}
+    }
+
+  if (bif_is_ldstmask (*bifaddr))
+    return rs6000_expand_ldst_mask (target, arg[0]);
+
+  if (bif_is_stvec (*bifaddr))
+    {
+      if (bif_is_reve (*bifaddr))
+	icode = elemrev_icode (fcode);
+      return stv_expand_builtin (icode, op, mode[0], mode[1]);
+    }
+
+  if (bif_is_ldvec (*bifaddr))
+    {
+      if (bif_is_reve (*bifaddr))
+	icode = elemrev_icode (fcode);
+      return ldv_expand_builtin (target, icode, op, mode[0]);
+    }
+
+  if (bif_is_lxvrse (*bifaddr))
+    return lxvrse_expand_builtin (target, icode, op, mode[0], mode[1]);
+
+  if (bif_is_lxvrze (*bifaddr))
+    return lxvrze_expand_builtin (target, icode, op, mode[0], mode[1]);
+
+  if (bif_is_mma (*bifaddr))
+    return new_mma_expand_builtin (exp, target, icode, fcode);
+
+  if (fcode == RS6000_BIF_PACK_IF
+      && TARGET_LONG_DOUBLE_128
+      && !TARGET_IEEEQUAD)
+    {
+      icode = CODE_FOR_packtf;
+      fcode = RS6000_BIF_PACK_TF;
+      uns_fcode = (size_t) fcode;
+    }
+  else if (fcode == RS6000_BIF_UNPACK_IF
+	   && TARGET_LONG_DOUBLE_128
+	   && !TARGET_IEEEQUAD)
+    {
+      icode = CODE_FOR_unpacktf;
+      fcode = RS6000_BIF_UNPACK_TF;
+      uns_fcode = (size_t) fcode;
+    }
+
+  if (TREE_TYPE (TREE_TYPE (fndecl)) == void_type_node)
+    target = NULL_RTX;
+  else if (target == 0
+	   || GET_MODE (target) != mode[0]
+	   || !insn_data[icode].operand[0].predicate (target, mode[0]))
+    target = gen_reg_rtx (mode[0]);
+
+  for (int i = 0; i < nargs; i++)
+    if (!insn_data[icode].operand[i+k].predicate (op[i], mode[i+k]))
+      op[i] = copy_to_mode_reg (mode[i+k], op[i]);
+
+  rtx pat;
+
+  switch (nargs)
+    {
+    case 0:
+      pat = (void_func
+	     ? GEN_FCN (icode) ()
+	     : GEN_FCN (icode) (target));
+      break;
+    case 1:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0])
+	     : GEN_FCN (icode) (target, op[0]));
+      break;
+    case 2:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0], op[1])
+	     : GEN_FCN (icode) (target, op[0], op[1]));
+      break;
+    case 3:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0], op[1], op[2])
+	     : GEN_FCN (icode) (target, op[0], op[1], op[2]));
+      break;
+    case 4:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0], op[1], op[2], op[3])
+	     : GEN_FCN (icode) (target, op[0], op[1], op[2], op[3]));
+      break;
+    case 5:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4])
+	     : GEN_FCN (icode) (target, op[0], op[1], op[2], op[3], op[4]));
+      break;
+    case 6:
+      pat = (void_func
+	     ? GEN_FCN (icode) (op[0], op[1], op[2], op[3], op[4], op[5])
+	     : GEN_FCN (icode) (target, op[0], op[1],
+				op[2], op[3], op[4], op[5]));
+      break;
+    default:
+      gcc_assert (MAX_BUILTIN_ARGS == 6);
+      gcc_unreachable ();
+    }
+
+  if (!pat)
+    return 0;
+
+  emit_insn (pat);
+  return target;
+}
+
 /* Create a builtin vector type with a name.  Taking care not to give
    the canonical type a name.  */
 
@@ -13115,35 +16039,91 @@ rs6000_init_builtins (void)
 {
   tree tdecl;
   tree ftype;
+  tree t;
   machine_mode mode;
+  const char *str;
 
   if (TARGET_DEBUG_BUILTIN)
     fprintf (stderr, "rs6000_init_builtins%s%s\n",
 	     (TARGET_ALTIVEC)	   ? ", altivec" : "",
 	     (TARGET_VSX)	   ? ", vsx"	 : "");
 
-  V2DI_type_node = rs6000_vector_type (TARGET_POWERPC64 ? "__vector long"
-				       : "__vector long long",
-				       long_long_integer_type_node, 2);
+  if (new_builtins_are_live)
+    V2DI_type_node = rs6000_vector_type ("__vector long long",
+					 long_long_integer_type_node, 2);
+  else
+    {
+      str = TARGET_POWERPC64 ? "__vector long" : "__vector long long";
+      V2DI_type_node = rs6000_vector_type (str,
+					   long_long_integer_type_node,
+					   2);
+    }
+  ptr_V2DI_type_node
+    = build_pointer_type (build_qualified_type (V2DI_type_node,
+						TYPE_QUAL_CONST));
+
   V2DF_type_node = rs6000_vector_type ("__vector double", double_type_node, 2);
+  ptr_V2DF_type_node
+    = build_pointer_type (build_qualified_type (V2DF_type_node,
+						TYPE_QUAL_CONST));
+
   V4SI_type_node = rs6000_vector_type ("__vector signed int",
 				       intSI_type_node, 4);
+  ptr_V4SI_type_node
+    = build_pointer_type (build_qualified_type (V4SI_type_node,
+						TYPE_QUAL_CONST));
+
   V4SF_type_node = rs6000_vector_type ("__vector float", float_type_node, 4);
+  ptr_V4SF_type_node
+    = build_pointer_type (build_qualified_type (V4SF_type_node,
+						TYPE_QUAL_CONST));
+
   V8HI_type_node = rs6000_vector_type ("__vector signed short",
 				       intHI_type_node, 8);
+  ptr_V8HI_type_node
+    = build_pointer_type (build_qualified_type (V8HI_type_node,
+						TYPE_QUAL_CONST));
+
   V16QI_type_node = rs6000_vector_type ("__vector signed char",
 					intQI_type_node, 16);
+  ptr_V16QI_type_node
+    = build_pointer_type (build_qualified_type (V16QI_type_node,
+						TYPE_QUAL_CONST));
 
   unsigned_V16QI_type_node = rs6000_vector_type ("__vector unsigned char",
 					unsigned_intQI_type_node, 16);
+  ptr_unsigned_V16QI_type_node
+    = build_pointer_type (build_qualified_type (unsigned_V16QI_type_node,
+						TYPE_QUAL_CONST));
+
   unsigned_V8HI_type_node = rs6000_vector_type ("__vector unsigned short",
 				       unsigned_intHI_type_node, 8);
+  ptr_unsigned_V8HI_type_node
+    = build_pointer_type (build_qualified_type (unsigned_V8HI_type_node,
+						TYPE_QUAL_CONST));
+
   unsigned_V4SI_type_node = rs6000_vector_type ("__vector unsigned int",
 				       unsigned_intSI_type_node, 4);
-  unsigned_V2DI_type_node = rs6000_vector_type (TARGET_POWERPC64
-				       ? "__vector unsigned long"
-				       : "__vector unsigned long long",
-				       long_long_unsigned_type_node, 2);
+  ptr_unsigned_V4SI_type_node
+    = build_pointer_type (build_qualified_type (unsigned_V4SI_type_node,
+						TYPE_QUAL_CONST));
+
+  if (new_builtins_are_live)
+    unsigned_V2DI_type_node
+      = rs6000_vector_type ("__vector unsigned long long",
+			    long_long_unsigned_type_node, 2);
+  else
+    {
+      str = TARGET_POWERPC64
+	? "__vector unsigned long"
+	: "__vector unsigned long long";
+      unsigned_V2DI_type_node
+	= rs6000_vector_type (str, long_long_unsigned_type_node, 2);
+    }
+
+  ptr_unsigned_V2DI_type_node
+    = build_pointer_type (build_qualified_type (unsigned_V2DI_type_node,
+						TYPE_QUAL_CONST));
 
   opaque_V4SI_type_node = build_opaque_vector_type (intSI_type_node, 4);
 
@@ -13157,9 +16137,15 @@ rs6000_init_builtins (void)
     {
       V1TI_type_node = rs6000_vector_type ("__vector __int128",
 					   intTI_type_node, 1);
+      ptr_V1TI_type_node
+	= build_pointer_type (build_qualified_type (V1TI_type_node,
+						    TYPE_QUAL_CONST));
       unsigned_V1TI_type_node
 	= rs6000_vector_type ("__vector unsigned __int128",
 			      unsigned_intTI_type_node, 1);
+      ptr_unsigned_V1TI_type_node
+	= build_pointer_type (build_qualified_type (unsigned_V1TI_type_node,
+						    TYPE_QUAL_CONST));
     }
 
   /* The 'vector bool ...' types must be kept distinct from 'vector unsigned ...'
@@ -13193,6 +16179,76 @@ rs6000_init_builtins (void)
   dfloat128_type_internal_node = dfloat128_type_node;
   void_type_internal_node = void_type_node;
 
+  ptr_intQI_type_node
+    = build_pointer_type (build_qualified_type (intQI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_uintQI_type_node
+    = build_pointer_type (build_qualified_type (uintQI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_intHI_type_node
+    = build_pointer_type (build_qualified_type (intHI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_uintHI_type_node
+    = build_pointer_type (build_qualified_type (uintHI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_intSI_type_node
+    = build_pointer_type (build_qualified_type (intSI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_uintSI_type_node
+    = build_pointer_type (build_qualified_type (uintSI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_intDI_type_node
+    = build_pointer_type (build_qualified_type (intDI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_uintDI_type_node
+    = build_pointer_type (build_qualified_type (uintDI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_intTI_type_node
+    = build_pointer_type (build_qualified_type (intTI_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_uintTI_type_node
+    = build_pointer_type (build_qualified_type (uintTI_type_internal_node,
+						TYPE_QUAL_CONST));
+
+  t = build_qualified_type (long_integer_type_internal_node, TYPE_QUAL_CONST);
+  ptr_long_integer_type_node = build_pointer_type (t);
+
+  t = build_qualified_type (long_unsigned_type_internal_node, TYPE_QUAL_CONST);
+  ptr_long_unsigned_type_node = build_pointer_type (t);
+
+  ptr_float_type_node
+    = build_pointer_type (build_qualified_type (float_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_double_type_node
+    = build_pointer_type (build_qualified_type (double_type_internal_node,
+						TYPE_QUAL_CONST));
+  ptr_long_double_type_node
+    = build_pointer_type (build_qualified_type (long_double_type_internal_node,
+						TYPE_QUAL_CONST));
+  if (dfloat64_type_node)
+    {
+      t = build_qualified_type (dfloat64_type_internal_node, TYPE_QUAL_CONST);
+      ptr_dfloat64_type_node = build_pointer_type (t);
+    }
+  else
+    ptr_dfloat64_type_node = NULL;
+
+  if (dfloat128_type_node)
+    {
+      t = build_qualified_type (dfloat128_type_internal_node, TYPE_QUAL_CONST);
+      ptr_dfloat128_type_node = build_pointer_type (t);
+    }
+  else
+    ptr_dfloat128_type_node = NULL;
+
+  t = build_qualified_type (long_long_integer_type_internal_node,
+			    TYPE_QUAL_CONST);
+  ptr_long_long_integer_type_node  = build_pointer_type (t);
+
+  t = build_qualified_type (long_long_unsigned_type_internal_node,
+			    TYPE_QUAL_CONST);
+  ptr_long_long_unsigned_type_node = build_pointer_type (t);
+
   /* 128-bit floating point support.  KFmode is IEEE 128-bit floating point.
      IFmode is the IBM extended 128-bit format that is a pair of doubles.
      TFmode will be either IEEE 128-bit floating point or the IBM double-double
@@ -13220,7 +16276,8 @@ rs6000_init_builtins (void)
 	  SET_TYPE_MODE (ibm128_float_type_node, IFmode);
 	  layout_type (ibm128_float_type_node);
 	}
-
+      t = build_qualified_type (ibm128_float_type_node, TYPE_QUAL_CONST);
+      ptr_ibm128_float_type_node = build_pointer_type (t);
       lang_hooks.types.register_builtin_type (ibm128_float_type_node,
 					      "__ibm128");
 
@@ -13228,7 +16285,8 @@ rs6000_init_builtins (void)
 	ieee128_float_type_node = long_double_type_node;
       else
 	ieee128_float_type_node = float128_type_node;
-
+      t = build_qualified_type (ieee128_float_type_node, TYPE_QUAL_CONST);
+      ptr_ieee128_float_type_node = build_pointer_type (t);
       lang_hooks.types.register_builtin_type (ieee128_float_type_node,
 					      "__ieee128");
     }
@@ -13237,28 +16295,29 @@ rs6000_init_builtins (void)
     ieee128_float_type_node = ibm128_float_type_node = long_double_type_node;
 
   /* Vector pair and vector quad support.  */
-  if (TARGET_EXTRA_BUILTINS)
-    {
-      vector_pair_type_node = make_node (OPAQUE_TYPE);
-      SET_TYPE_MODE (vector_pair_type_node, OOmode);
-      TYPE_SIZE (vector_pair_type_node) = bitsize_int (GET_MODE_BITSIZE (OOmode));
-      TYPE_PRECISION (vector_pair_type_node) = GET_MODE_BITSIZE (OOmode);
-      TYPE_SIZE_UNIT (vector_pair_type_node) = size_int (GET_MODE_SIZE (OOmode));
-      SET_TYPE_ALIGN (vector_pair_type_node, 256);
-      TYPE_USER_ALIGN (vector_pair_type_node) = 0;
-      lang_hooks.types.register_builtin_type (vector_pair_type_node,
-					      "__vector_pair");
+  vector_pair_type_node = make_node (OPAQUE_TYPE);
+  SET_TYPE_MODE (vector_pair_type_node, OOmode);
+  TYPE_SIZE (vector_pair_type_node) = bitsize_int (GET_MODE_BITSIZE (OOmode));
+  TYPE_PRECISION (vector_pair_type_node) = GET_MODE_BITSIZE (OOmode);
+  TYPE_SIZE_UNIT (vector_pair_type_node) = size_int (GET_MODE_SIZE (OOmode));
+  SET_TYPE_ALIGN (vector_pair_type_node, 256);
+  TYPE_USER_ALIGN (vector_pair_type_node) = 0;
+  lang_hooks.types.register_builtin_type (vector_pair_type_node,
+					  "__vector_pair");
+  t = build_qualified_type (vector_pair_type_node, TYPE_QUAL_CONST);
+  ptr_vector_pair_type_node = build_pointer_type (t);
 
-      vector_quad_type_node = make_node (OPAQUE_TYPE);
-      SET_TYPE_MODE (vector_quad_type_node, XOmode);
-      TYPE_SIZE (vector_quad_type_node) = bitsize_int (GET_MODE_BITSIZE (XOmode));
-      TYPE_PRECISION (vector_quad_type_node) = GET_MODE_BITSIZE (XOmode);
-      TYPE_SIZE_UNIT (vector_quad_type_node) = size_int (GET_MODE_SIZE (XOmode));
-      SET_TYPE_ALIGN (vector_quad_type_node, 512);
-      TYPE_USER_ALIGN (vector_quad_type_node) = 0;
-      lang_hooks.types.register_builtin_type (vector_quad_type_node,
-					      "__vector_quad");
-    }
+  vector_quad_type_node = make_node (OPAQUE_TYPE);
+  SET_TYPE_MODE (vector_quad_type_node, XOmode);
+  TYPE_SIZE (vector_quad_type_node) = bitsize_int (GET_MODE_BITSIZE (XOmode));
+  TYPE_PRECISION (vector_quad_type_node) = GET_MODE_BITSIZE (XOmode);
+  TYPE_SIZE_UNIT (vector_quad_type_node) = size_int (GET_MODE_SIZE (XOmode));
+  SET_TYPE_ALIGN (vector_quad_type_node, 512);
+  TYPE_USER_ALIGN (vector_quad_type_node) = 0;
+  lang_hooks.types.register_builtin_type (vector_quad_type_node,
+					  "__vector_quad");
+  t = build_qualified_type (vector_quad_type_node, TYPE_QUAL_CONST);
+  ptr_vector_quad_type_node = build_pointer_type (t);
 
   /* Initialize the modes for builtin_function_type, mapping a machine mode to
      tree type node.  */
@@ -13308,16 +16367,119 @@ rs6000_init_builtins (void)
 
   bool_V16QI_type_node = rs6000_vector_type ("__vector __bool char",
 					     bool_char_type_node, 16);
+  ptr_bool_V16QI_type_node
+    = build_pointer_type (build_qualified_type (bool_V16QI_type_node,
+						TYPE_QUAL_CONST));
+
   bool_V8HI_type_node = rs6000_vector_type ("__vector __bool short",
 					    bool_short_type_node, 8);
+  ptr_bool_V8HI_type_node
+    = build_pointer_type (build_qualified_type (bool_V8HI_type_node,
+						TYPE_QUAL_CONST));
+
   bool_V4SI_type_node = rs6000_vector_type ("__vector __bool int",
 					    bool_int_type_node, 4);
+  ptr_bool_V4SI_type_node
+    = build_pointer_type (build_qualified_type (bool_V4SI_type_node,
+						TYPE_QUAL_CONST));
+
   bool_V2DI_type_node = rs6000_vector_type (TARGET_POWERPC64
 					    ? "__vector __bool long"
 					    : "__vector __bool long long",
 					    bool_long_long_type_node, 2);
+  ptr_bool_V2DI_type_node
+    = build_pointer_type (build_qualified_type (bool_V2DI_type_node,
+						TYPE_QUAL_CONST));
+
+  bool_V1TI_type_node = rs6000_vector_type ("__vector __bool __int128",
+					    intTI_type_node, 1);
+  ptr_bool_V1TI_type_node
+    = build_pointer_type (build_qualified_type (bool_V1TI_type_node,
+						TYPE_QUAL_CONST));
+
   pixel_V8HI_type_node = rs6000_vector_type ("__vector __pixel",
 					     pixel_type_node, 8);
+  ptr_pixel_V8HI_type_node
+    = build_pointer_type (build_qualified_type (pixel_V8HI_type_node,
+						TYPE_QUAL_CONST));
+  pcvoid_type_node
+    = build_pointer_type (build_qualified_type (void_type_node,
+						TYPE_QUAL_CONST));
+
+  /* Execute the autogenerated initialization code for builtins.  */
+  rs6000_init_generated_builtins ();
+
+  if (TARGET_DEBUG_BUILTIN)
+    {
+      fprintf (stderr, "\nAutogenerated built-in functions:\n\n");
+      for (int i = 1; i < (int) RS6000_BIF_MAX; i++)
+	{
+	  bif_enable e = rs6000_builtin_info_x[i].enable;
+	  if (e == ENB_P5 && !TARGET_POPCNTB)
+	    continue;
+	  if (e == ENB_P6 && !TARGET_CMPB)
+	    continue;
+	  if (e == ENB_ALTIVEC && !TARGET_ALTIVEC)
+	    continue;
+	  if (e == ENB_VSX && !TARGET_VSX)
+	    continue;
+	  if (e == ENB_P7 && !TARGET_POPCNTD)
+	    continue;
+	  if (e == ENB_P7_64 && !(TARGET_POPCNTD && TARGET_POWERPC64))
+	    continue;
+	  if (e == ENB_P8 && !TARGET_DIRECT_MOVE)
+	    continue;
+	  if (e == ENB_P8V && !TARGET_P8_VECTOR)
+	    continue;
+	  if (e == ENB_P9 && !TARGET_MODULO)
+	    continue;
+	  if (e == ENB_P9_64 && !(TARGET_MODULO && TARGET_POWERPC64))
+	    continue;
+	  if (e == ENB_P9V && !TARGET_P9_VECTOR)
+	    continue;
+	  if (e == ENB_IEEE128_HW && !TARGET_FLOAT128_HW)
+	    continue;
+	  if (e == ENB_DFP && !TARGET_DFP)
+	    continue;
+	  if (e == ENB_CRYPTO && !TARGET_CRYPTO)
+	    continue;
+	  if (e == ENB_HTM && !TARGET_HTM)
+	    continue;
+	  if (e == ENB_P10 && !TARGET_POWER10)
+	    continue;
+	  if (e == ENB_P10_64 && !(TARGET_POWER10 && TARGET_POWERPC64))
+	    continue;
+	  if (e == ENB_MMA && !TARGET_MMA)
+	    continue;
+	  tree fntype = rs6000_builtin_info_x[i].fntype;
+	  tree t = TREE_TYPE (fntype);
+	  fprintf (stderr, "%s %s (", rs6000_type_string (t),
+		   rs6000_builtin_info_x[i].bifname);
+	  t = TYPE_ARG_TYPES (fntype);
+	  while (t && TREE_VALUE (t) != void_type_node)
+	    {
+	      fprintf (stderr, "%s",
+		       rs6000_type_string (TREE_VALUE (t)));
+	      t = TREE_CHAIN (t);
+	      if (t && TREE_VALUE (t) != void_type_node)
+		fprintf (stderr, ", ");
+	    }
+	  fprintf (stderr, "); %s [%4d]\n",
+		   rs6000_builtin_info_x[i].attr_string, (int) i);
+	}
+      fprintf (stderr, "\nEnd autogenerated built-in functions.\n\n\n");
+     }
+
+  if (new_builtins_are_live)
+    {
+      altivec_builtin_mask_for_load
+	= rs6000_builtin_decls_x[RS6000_BIF_MASK_FOR_LOAD];
+
+#ifdef SUBTARGET_INIT_BUILTINS
+      SUBTARGET_INIT_BUILTINS;
+#endif
+      return;
+    }
 
   /* Create Altivec, VSX and MMA builtins on machines with at least the
      general purpose extensions (970 and newer) to allow the use of
@@ -13447,11 +16609,31 @@ rs6000_init_builtins (void)
     }
 }
 
+static tree
+rs6000_new_builtin_decl (unsigned code, bool /* initialize_p */)
+{
+  rs6000_gen_builtins fcode = (rs6000_gen_builtins) code;
+
+  if (fcode >= RS6000_OVLD_MAX)
+    return error_mark_node;
+
+  if (!rs6000_new_builtin_is_supported (fcode))
+    {
+      rs6000_invalid_new_builtin (fcode);
+      return error_mark_node;
+    }
+
+  return rs6000_builtin_decls_x[code];
+}
+
 /* Returns the rs6000 builtin decl for CODE.  */
 
 tree
 rs6000_builtin_decl (unsigned code, bool initialize_p ATTRIBUTE_UNUSED)
 {
+  if (new_builtins_are_live)
+    return rs6000_new_builtin_decl (code, initialize_p);
+
   HOST_WIDE_INT fnmask;
 
   if (code >= RS6000_BUILTIN_COUNT)
@@ -13476,10 +16658,6 @@ altivec_init_builtins (void)
   tree decl;
 
   tree pvoid_type_node = build_pointer_type (void_type_node);
-
-  tree pcvoid_type_node
-    = build_pointer_type (build_qualified_type (void_type_node,
-						TYPE_QUAL_CONST));
 
   tree int_ftype_opaque
     = build_function_type_list (integer_type_node,
@@ -13513,6 +16691,10 @@ altivec_init_builtins (void)
     = build_function_type_list (integer_type_node,
 				integer_type_node, V2DI_type_node,
 				V2DI_type_node, NULL_TREE);
+  tree int_ftype_int_v1ti_v1ti
+    = build_function_type_list (integer_type_node,
+				integer_type_node, V1TI_type_node,
+				V1TI_type_node, NULL_TREE);
   tree void_ftype_v4si
     = build_function_type_list (void_type_node, V4SI_type_node, NULL_TREE);
   tree v8hi_ftype_void
@@ -13880,6 +17062,9 @@ altivec_init_builtins (void)
 	case E_VOIDmode:
 	  type = int_ftype_int_opaque_opaque;
 	  break;
+	case E_V1TImode:
+	  type = int_ftype_int_v1ti_v1ti;
+	  break;
 	case E_V2DImode:
 	  type = int_ftype_int_v2di_v2di;
 	  break;
@@ -13951,6 +17136,14 @@ altivec_init_builtins (void)
 			       ALTIVEC_BUILTIN_MASK_FOR_LOAD,
 			       BUILT_IN_MD, NULL, NULL_TREE);
   TREE_READONLY (decl) = 1;
+  if (TARGET_DEBUG_BUILTIN)
+    {
+      tree arg_type = TREE_VALUE (TYPE_ARG_TYPES (v16qi_ftype_pcvoid));
+      fprintf (stderr, "%s __builtin_altivec_mask_for_load (%s); [%4d]\n",
+	       rs6000_type_string (TREE_TYPE (v16qi_ftype_pcvoid)),
+	       rs6000_type_string (arg_type),
+	       (int) ALTIVEC_BUILTIN_MASK_FOR_LOAD);
+    }
   /* Record the decl. Will be used by rs6000_builtin_mask_for_load.  */
   altivec_builtin_mask_for_load = decl;
 
@@ -14108,11 +17301,15 @@ mma_init_builtins (void)
       if (gimple_func)
 	{
 	  gcc_assert (icode == CODE_FOR_nothing);
-	  op[nopnds++] = void_type_node;
 	  /* Some MMA built-ins that are expanded into gimple are converted
 	     into internal MMA built-ins that are expanded into rtl.
 	     The internal built-in follows immediately after this built-in.  */
-	  icode = d[1].icode;
+	  if (d->code != VSX_BUILTIN_LXVP
+	      && d->code != VSX_BUILTIN_STXVP)
+	    {
+	      op[nopnds++] = void_type_node;
+	      icode = d[1].icode;
+	    }
 	}
       else
 	{
@@ -14135,6 +17332,19 @@ mma_init_builtins (void)
 	  else
 	    op[nopnds++] = build_pointer_type (vector_pair_type_node);
 	}
+      else if (d->code == VSX_BUILTIN_LXVP)
+	{
+	  op[nopnds++] = vector_pair_type_node;
+	  op[nopnds++] = sizetype;
+	  op[nopnds++] = build_pointer_type (vector_pair_type_node);
+	}
+      else if (d->code == VSX_BUILTIN_STXVP)
+	{
+	  op[nopnds++] = void_type_node;
+	  op[nopnds++] = vector_pair_type_node;
+	  op[nopnds++] = sizetype;
+	  op[nopnds++] = build_pointer_type (vector_pair_type_node);
+	}
       else
 	{
 	  /* This is a normal MMA built-in function.  */
@@ -14148,8 +17358,10 @@ mma_init_builtins (void)
 	      machine_mode mode = insn_data[icode].operand[j].mode;
 	      if (gimple_func && mode == XOmode)
 		op[nopnds++] = build_pointer_type (vector_quad_type_node);
-	      else if (gimple_func && mode == OOmode
-		       && d->code == VSX_BUILTIN_ASSEMBLE_PAIR)
+	      else if (gimple_func
+		       && mode == OOmode
+		       && (d->code == VSX_BUILTIN_BUILD_PAIR
+			   || d->code == VSX_BUILTIN_ASSEMBLE_PAIR))
 		op[nopnds++] = build_pointer_type (vector_pair_type_node);
 	      else
 		/* MMA uses unsigned types.  */
@@ -14473,6 +17685,11 @@ builtin_function_type (machine_mode mode_ret, machine_mode mode_arg0,
     case P8V_BUILTIN_ORC_V4SI_UNS:
     case P8V_BUILTIN_ORC_V2DI_UNS:
     case P8V_BUILTIN_ORC_V1TI_UNS:
+    case P10_BUILTIN_CFUGED:
+    case P10_BUILTIN_CNTLZDM:
+    case P10_BUILTIN_CNTTZDM:
+    case P10_BUILTIN_PDEPD:
+    case P10_BUILTIN_PEXTD:
     case P10V_BUILTIN_VCFUGED:
     case P10V_BUILTIN_VCLZDM:
     case P10V_BUILTIN_VCTZDM:
@@ -14485,12 +17702,16 @@ builtin_function_type (machine_mode mode_ret, machine_mode mode_arg0,
     case P10V_BUILTIN_XXGENPCVM_V2DI:
     case P10V_BUILTIN_DIVEU_V4SI:
     case P10V_BUILTIN_DIVEU_V2DI:
+    case P10V_BUILTIN_DIVEU_V1TI:
     case P10V_BUILTIN_DIVU_V4SI:
     case P10V_BUILTIN_DIVU_V2DI:
+    case P10V_BUILTIN_MODU_V1TI:
     case P10V_BUILTIN_MODU_V2DI:
     case P10V_BUILTIN_MODU_V4SI:
     case P10V_BUILTIN_MULHU_V2DI:
     case P10V_BUILTIN_MULHU_V4SI:
+    case P10V_BUILTIN_VMULEUD:
+    case P10V_BUILTIN_VMULOUD:
       h.uns_p[0] = 1;
       h.uns_p[1] = 1;
       h.uns_p[2] = 1;
@@ -14590,10 +17811,13 @@ builtin_function_type (machine_mode mode_ret, machine_mode mode_arg0,
     case VSX_BUILTIN_CMPGE_U8HI:
     case VSX_BUILTIN_CMPGE_U4SI:
     case VSX_BUILTIN_CMPGE_U2DI:
+    case P10V_BUILTIN_CMPGE_U1TI:
     case ALTIVEC_BUILTIN_VCMPGTUB:
     case ALTIVEC_BUILTIN_VCMPGTUH:
     case ALTIVEC_BUILTIN_VCMPGTUW:
     case P8V_BUILTIN_VCMPGTUD:
+    case P10V_BUILTIN_VCMPGTUT:
+    case P10V_BUILTIN_VCMPEQUT:
       h.uns_p[1] = 1;
       h.uns_p[2] = 1;
       break;
@@ -14614,6 +17838,16 @@ builtin_function_type (machine_mode mode_ret, machine_mode mode_arg0,
     case P10V_BUILTIN_VXXSPLTI32DX_V4SI:
     case P10V_BUILTIN_VXXSPLTI32DX_V4SF:
       h.uns_p[2] = 1;
+      break;
+
+    case VSX_BUILTIN_LXVP:
+      h.uns_p[0] = 1;
+      h.uns_p[2] = 1;
+      break;
+
+    case VSX_BUILTIN_STXVP:
+      h.uns_p[1] = 1;
+      h.uns_p[3] = 1;
       break;
 
     default:

@@ -97,22 +97,29 @@ struct die_struct;
 #define ECF_COLD		  (1 << 15)
 
 /* Call argument flags.  */
-/* Nonzero if the argument is not dereferenced recursively, thus only
-   directly reachable memory is read or written.  */
-#define EAF_DIRECT		(1 << 0)
-
-/* Nonzero if memory reached by the argument is not clobbered.  */
-#define EAF_NOCLOBBER		(1 << 1)
-
-/* Nonzero if the argument does not escape.  */
-#define EAF_NOESCAPE		(1 << 2)
 
 /* Nonzero if the argument is not used by the function.  */
-#define EAF_UNUSED		(1 << 3)
+#define EAF_UNUSED		(1 << 1)
 
-/* Nonzero if the argument itself does not escape but memory
-   referenced by it can escape.  */
-#define EAF_NODIRECTESCAPE	(1 << 4)
+/* Following flags come in pairs.  First one is about direct dereferences
+   from the parameter, while the second is about memory reachable by
+   recursive dereferences.  */
+
+/* Nonzero if memory reached by the argument is not clobbered.  */
+#define EAF_NO_DIRECT_CLOBBER	(1 << 2)
+#define EAF_NO_INDIRECT_CLOBBER	(1 << 3)
+
+/* Nonzero if the argument does not escape.  */
+#define EAF_NO_DIRECT_ESCAPE	(1 << 4)
+#define EAF_NO_INDIRECT_ESCAPE	(1 << 5)
+
+/* Nonzero if the argument does not escape to return value.  */
+#define EAF_NOT_RETURNED_DIRECTLY (1 << 6)
+#define EAF_NOT_RETURNED_INDIRECTLY (1 << 7)
+
+/* Nonzero if the argument is not read.  */
+#define EAF_NO_DIRECT_READ	(1 << 8)
+#define EAF_NO_INDIRECT_READ	(1 << 9)
 
 /* Call return flags.  */
 /* Mask for the argument number that is returned.  Lower two bits of
@@ -276,6 +283,9 @@ enum omp_clause_code {
 
   /* OpenMP clause: linear (variable-list[:linear-step]).  */
   OMP_CLAUSE_LINEAR,
+
+  /* OpenMP clause: affinity([depend-modifier :] variable-list).  */
+  OMP_CLAUSE_AFFINITY,
 
   /* OpenMP clause: aligned (variable-list[:alignment]).  */
   OMP_CLAUSE_ALIGNED,
@@ -470,6 +480,9 @@ enum omp_clause_code {
   /* OpenMP clause: bind (binding).  */
   OMP_CLAUSE_BIND,
 
+  /* OpenMP clause: filter (integer-expression).  */
+  OMP_CLAUSE_FILTER,
+
   /* Internally used only clause, holding SIMD uid.  */
   OMP_CLAUSE__SIMDUID_,
 
@@ -502,7 +515,10 @@ enum omp_clause_code {
   OMP_CLAUSE_IF_PRESENT,
 
   /* OpenACC clause: finalize.  */
-  OMP_CLAUSE_FINALIZE
+  OMP_CLAUSE_FINALIZE,
+
+  /* OpenACC clause: nohost.  */
+  OMP_CLAUSE_NOHOST,
 };
 
 #undef DEFTREESTRUCT
@@ -568,8 +584,17 @@ enum omp_memory_order {
   OMP_MEMORY_ORDER_ACQUIRE,
   OMP_MEMORY_ORDER_RELEASE,
   OMP_MEMORY_ORDER_ACQ_REL,
-  OMP_MEMORY_ORDER_SEQ_CST
+  OMP_MEMORY_ORDER_SEQ_CST,
+  OMP_MEMORY_ORDER_MASK = 7,
+  OMP_FAIL_MEMORY_ORDER_UNSPECIFIED = OMP_MEMORY_ORDER_UNSPECIFIED * 8,
+  OMP_FAIL_MEMORY_ORDER_RELAXED = OMP_MEMORY_ORDER_RELAXED * 8,
+  OMP_FAIL_MEMORY_ORDER_ACQUIRE = OMP_MEMORY_ORDER_ACQUIRE * 8,
+  OMP_FAIL_MEMORY_ORDER_RELEASE = OMP_MEMORY_ORDER_RELEASE * 8,
+  OMP_FAIL_MEMORY_ORDER_ACQ_REL = OMP_MEMORY_ORDER_ACQ_REL * 8,
+  OMP_FAIL_MEMORY_ORDER_SEQ_CST = OMP_MEMORY_ORDER_SEQ_CST * 8,
+  OMP_FAIL_MEMORY_ORDER_MASK = OMP_MEMORY_ORDER_MASK * 8
 };
+#define OMP_FAIL_MEMORY_ORDER_SHIFT 3
 
 /* There is a TYPE_QUAL value for each type qualifier.  They can be
    combined by bitwise-or to form the complete set of qualifiers for a
@@ -885,6 +910,7 @@ enum size_type_kind {
   stk_type_kind_last
 };
 
+/* Flags controlling operand_equal_p() behavior.  */
 enum operand_equal_flag {
   OEP_ONLY_CONST = 1,
   OEP_PURE_SAME = 2,
@@ -899,7 +925,11 @@ enum operand_equal_flag {
   OEP_BITWISE = 128,
   /* For OEP_ADDRESS_OF of COMPONENT_REFs, only consider same fields as
      equivalent rather than also different fields with the same offset.  */
-  OEP_ADDRESS_OF_SAME_FIELD = 256
+  OEP_ADDRESS_OF_SAME_FIELD = 256,
+  /* In conjunction with OEP_LEXICOGRAPHIC considers names of declarations
+     of the same kind.  Used to compare VLA bounds involving parameters
+     across redeclarations of the same function.  */
+  OEP_DECL_NAME = 512
 };
 
 /* Enum and arrays used for tree allocation stats.
@@ -1018,7 +1048,8 @@ struct GTY(()) tree_base {
       unsigned user_align : 1;
       unsigned nameless_flag : 1;
       unsigned atomic_flag : 1;
-      unsigned spare0 : 3;
+      unsigned unavailable_flag : 1;
+      unsigned spare0 : 2;
 
       unsigned spare1 : 8;
 
@@ -1340,6 +1371,12 @@ struct GTY(()) tree_base {
        SSA_NAME_POINTS_TO_READONLY_MEMORY in
 	   SSA_NAME
 
+   unavailable_flag:
+
+       TREE_UNAVAILABLE in
+	   all decls
+	   all types
+
    visited:
 
        TREE_VISITED in
@@ -1387,6 +1424,7 @@ struct GTY(()) tree_base {
 
        CALL_EXPR_BY_DESCRIPTOR in
            CALL_EXPR
+
 */
 
 struct GTY(()) tree_typed {
@@ -1484,6 +1522,7 @@ enum omp_clause_proc_bind_kind
   /* Numbers should match omp_proc_bind_t enum in omp.h.  */
   OMP_CLAUSE_PROC_BIND_FALSE = 0,
   OMP_CLAUSE_PROC_BIND_TRUE = 1,
+  OMP_CLAUSE_PROC_BIND_PRIMARY = 2,
   OMP_CLAUSE_PROC_BIND_MASTER = 2,
   OMP_CLAUSE_PROC_BIND_CLOSE = 3,
   OMP_CLAUSE_PROC_BIND_SPREAD = 4,

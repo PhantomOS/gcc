@@ -332,6 +332,11 @@ extern const char *s390_host_detect_local_cpu (int argc, const char **argv);
 
 #define STACK_SIZE_MODE (Pmode)
 
+/* Make the stack pointer to be moved downwards while issuing stack probes with
+   -fstack-check.  We need this to prevent memory below the stack pointer from
+   being accessed.  */
+#define STACK_CHECK_MOVING_SP 1
+
 #ifndef IN_LIBGCC2
 
 /* Width of a word, in units (bytes).  */
@@ -786,6 +791,8 @@ CUMULATIVE_ARGS;
   s390_function_profiler ((FILE), ((LABELNO)))
 
 #define PROFILE_BEFORE_PROLOGUE 1
+
+#define NO_PROFILE_COUNTERS 1
 
 
 /* Trampolines for nested functions.  */

@@ -129,7 +129,7 @@
 #define vec_vcfux __builtin_vec_vcfux
 #define vec_cts __builtin_vec_cts
 #define vec_ctu __builtin_vec_ctu
-#define vec_cpsgn __builtin_vec_copysign
+#define vec_cpsgn(x,y) __builtin_vec_copysign(y,x)
 #define vec_double __builtin_vec_double
 #define vec_doublee __builtin_vec_doublee
 #define vec_doubleo __builtin_vec_doubleo
@@ -497,6 +497,8 @@
 
 #define vec_xlx __builtin_vec_vextulx
 #define vec_xrx __builtin_vec_vexturx
+#define vec_signexti  __builtin_vec_vsignexti
+#define vec_signextll __builtin_vec_vsignextll
 
 #endif
 
@@ -715,6 +717,10 @@ __altivec_scalar_pred(vec_any_nle,
 #define vec_step(x) __builtin_vec_step (* (__typeof__ (x) *) 0)
 
 #ifdef _ARCH_PWR10
+#define vec_signextq  __builtin_vec_vsignextq
+#define vec_dive __builtin_vec_dive
+#define vec_mod  __builtin_vec_mod
+
 /* May modify these macro definitions if future capabilities overload
    with support for different vector argument and result types.  */
 #define vec_cntlzm(a, b)	__builtin_altivec_vclzdm (a, b)

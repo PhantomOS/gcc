@@ -94,7 +94,7 @@
 # define __cpp_lib_string_udls 201304
 # define __cpp_lib_transparent_operators 201510
 # define __cpp_lib_tuple_element_t 201402L
-# define __cpp_lib_tuples_by_type 201304
+# define __cpp_lib_tuples_by_type 201304L
 #endif
 
 #if __cplusplus >= 201703L
@@ -130,14 +130,19 @@
 #define __cpp_lib_chrono 201611
 #define __cpp_lib_clamp 201603
 #if __cplusplus == 201703L // N.B. updated value in C++20
-# define __cpp_lib_constexpr_char_traits 201611L
-# define __cpp_lib_constexpr_string 201611L
+# if _GLIBCXX_HAVE_BUILTIN_IS_CONSTANT_EVALUATED
+#  define __cpp_lib_constexpr_char_traits 201611L
+#  define __cpp_lib_constexpr_string 201611L
+# endif
 #endif
 #define __cpp_lib_enable_shared_from_this 201603
 #define __cpp_lib_execution 201902L // FIXME: should be 201603L
 #define __cpp_lib_filesystem 201703
 #define __cpp_lib_gcd 201606
 #define __cpp_lib_gcd_lcm 201606
+#ifdef __GCC_DESTRUCTIVE_SIZE
+# define __cpp_lib_hardware_interference_size 201703L
+#endif
 #define __cpp_lib_hypot 201603
 #define __cpp_lib_invoke 201411L
 #define __cpp_lib_lcm 201606
@@ -152,7 +157,9 @@
 #define __cpp_lib_node_extract 201606
 #define __cpp_lib_nonmember_container_access 201411
 #define __cpp_lib_not_fn 201603
-#define __cpp_lib_optional 201606L
+#if __cplusplus == 201703L // N.B. updated value in C++20
+# define __cpp_lib_optional 201606L
+#endif
 #define __cpp_lib_parallel_algorithm 201603L
 #define __cpp_lib_raw_memory_algorithms 201606L
 #define __cpp_lib_sample 201603
@@ -166,10 +173,12 @@
 # define __cpp_lib_to_chars 201611L
 #endif
 #define __cpp_lib_unordered_map_try_emplace 201411
-#define __cpp_lib_variant 201606L
+#if __cplusplus == 201703L || ! __cpp_concepts // N.B. updated value in C++20
+# define __cpp_lib_variant 202102L
+#endif
 #endif
 
-#if __cplusplus > 201703L
+#if __cplusplus >= 202002L
 // c++20
 #define __cpp_lib_atomic_flag_test 201907L
 #define __cpp_lib_atomic_float 201711L
@@ -213,21 +222,34 @@
 // FIXME: #define __cpp_lib_execution 201902L
 #define __cpp_lib_integer_comparison_functions 202002L
 #define __cpp_lib_constexpr_algorithms 201806L
-#define __cpp_lib_constexpr_char_traits 201811L
+#ifdef __cpp_lib_is_constant_evaluated
+# define __cpp_lib_constexpr_char_traits 201811L
+#endif
 #define __cpp_lib_constexpr_complex 201711L
 #define __cpp_lib_constexpr_dynamic_alloc 201907L
 #define __cpp_lib_constexpr_functional 201907L
 #define __cpp_lib_constexpr_iterator 201811L
 #define __cpp_lib_constexpr_memory 201811L
 #define __cpp_lib_constexpr_numeric 201911L
-#define __cpp_lib_constexpr_string 201811L
+#ifdef __cpp_lib_is_constant_evaluated
+# define __cpp_lib_constexpr_string 201811L
+#endif
 #define __cpp_lib_constexpr_string_view 201811L
 #define __cpp_lib_constexpr_tuple 201811L
 #define __cpp_lib_constexpr_utility 201811L
 #define __cpp_lib_erase_if 202002L
+#define __cpp_lib_generic_unordered_lookup 201811L
 #define __cpp_lib_interpolate 201902L
 #ifdef _GLIBCXX_HAS_GTHREADS
 # define __cpp_lib_jthread 201911L
+#endif
+#if __has_builtin(__is_layout_compatible) \
+  && __has_builtin(__builtin_is_corresponding_member)
+# define __cpp_lib_is_layout_compatible 201907L
+#endif
+#if __has_builtin(__is_pointer_interconvertible_base_of) \
+ && __has_builtin(__builtin_is_pointer_interconvertible_with_class)
+# define __cpp_lib_is_pointer_interconvertible 201907L
 #endif
 #if __cpp_lib_atomic_wait
 # define __cpp_lib_latch 201907L
@@ -237,9 +259,10 @@
 # define __cpp_lib_make_obj_using_allocator 201811L
 #endif
 #define __cpp_lib_math_constants 201907L
+#define __cpp_lib_optional 202106L
 #define __cpp_lib_polymorphic_allocator 201902L
 #if __cpp_lib_concepts
-# define __cpp_lib_ranges 201911L
+# define __cpp_lib_ranges 202106L
 #endif
 #if __cpp_lib_atomic_wait || _GLIBCXX_HAVE_POSIX_SEMAPHORE
 # define __cpp_lib_semaphore 201907L
@@ -259,12 +282,24 @@
 # endif
 #define __cpp_lib_to_address 201711L
 #define __cpp_lib_to_array 201907L
+#if __cpp_concepts
+# define __cpp_lib_variant 202106L
+#endif
 #endif
 
 #if __cplusplus > 202002L
 // c++2b
+#define __cpp_lib_adaptor_iterator_pair_constructor 202106L
+#define __cpp_lib_invoke_r 202106L
 #define __cpp_lib_is_scoped_enum 202011L
+#if __cpp_lib_concepts
+# define __cpp_lib_monadic_optional 202110L
+#endif
+#define __cpp_lib_move_only_function 202110L
 #define __cpp_lib_string_contains 202011L
+#if _GLIBCXX_USE_CXX11_ABI // Only supported with cxx11-abi
+# define __cpp_lib_string_resize_and_overwrite 202110L
+#endif
 #define __cpp_lib_to_underlying 202102L
 #endif // C++2b
 #endif // C++20

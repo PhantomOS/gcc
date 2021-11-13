@@ -29,7 +29,6 @@ with Sinfo;          use Sinfo;
 with Sinfo.Nodes;    use Sinfo.Nodes;
 with Stand;          use Stand;
 with Targparm;       use Targparm;
-with Uintp;          use Uintp;
 
 package body Itypes is
 
@@ -62,9 +61,9 @@ package body Itypes is
       end if;
 
       --  Make sure Esize (Typ) was properly initialized, it should be since
-      --  New_Internal_Entity/New_External_Entity call Init_Size_Align.
+      --  New_Internal_Entity/New_External_Entity call Reinit_Size_Align.
 
-      pragma Assert (Esize (Typ) = Uint_0);
+      pragma Assert (not Known_Esize (Typ));
 
       Set_Etype (Typ, Any_Type);
       Set_Is_Itype (Typ);
@@ -111,6 +110,7 @@ package body Itypes is
       Set_Is_Atomic                (I_Typ, Is_Atomic          (T));
       Set_Is_Ada_2005_Only         (I_Typ, Is_Ada_2005_Only   (T));
       Set_Is_Ada_2012_Only         (I_Typ, Is_Ada_2012_Only   (T));
+      Set_Is_Ada_2022_Only         (I_Typ, Is_Ada_2022_Only   (T));
       Set_Can_Never_Be_Null        (I_Typ);
 
       return I_Typ;

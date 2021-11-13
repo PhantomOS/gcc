@@ -563,9 +563,9 @@ package body Exp_Prag is
             null;
 
          elsif Nam = Name_Assert then
-            Error_Msg_N ("?A?assertion will fail at run time", N);
+            Error_Msg_N ("?.a?assertion will fail at run time", N);
          else
-            Error_Msg_N ("?A?check will fail at run time", N);
+            Error_Msg_N ("?.a?check will fail at run time", N);
          end if;
       end if;
    end Expand_Pragma_Check;
@@ -752,10 +752,10 @@ package body Exp_Prag is
       --  value of which is Init_Val if present or null if not.
 
       function Build_Simple_Declaration_With_Default
-         (Decl_Id     : Entity_Id;
-          Init_Val    : Entity_Id;
-          Typ         : Entity_Id;
-          Default_Val : Entity_Id) return Node_Id;
+        (Decl_Id     : Entity_Id;
+         Init_Val    : Node_Id;
+         Typ         : Node_Id;
+         Default_Val : Node_Id) return Node_Id;
       --  Build a declaration the Defining_Identifier of which is Decl_Id, the
       --  Object_Definition of which is Typ, the value of which is Init_Val if
       --  present or Default otherwise.
@@ -983,7 +983,7 @@ package body Exp_Prag is
       function Build_Simple_Declaration_With_Default
         (Decl_Id     : Entity_Id;
          Init_Val    : Node_Id;
-         Typ         : Entity_Id;
+         Typ         : Node_Id;
          Default_Val : Node_Id) return Node_Id
       is
          Value : Node_Id := Init_Val;
@@ -1525,9 +1525,7 @@ package body Exp_Prag is
          begin
             --  Attribute 'Old
 
-            if Nkind (N) = N_Attribute_Reference
-              and then Attribute_Name (N) = Name_Old
-            then
+            if Is_Attribute_Old (N) then
                Pref := Prefix (N);
 
                Indirect := Indirect_Temp_Needed (Etype (Pref));
@@ -2361,6 +2359,7 @@ package body Exp_Prag is
       S     : Entity_Id;
       E     : Entity_Id;
 
+      Remove_Inspection_Point : Boolean := False;
    begin
       if No (Pragma_Argument_Associations (N)) then
          A := New_List;
@@ -2400,6 +2399,36 @@ package body Exp_Prag is
          Expand (Expression (Assoc));
          Next (Assoc);
       end loop;
+
+      --  If any of the references have a freeze node, it must appear before
+      --  pragma Inspection_Point, otherwise the entity won't be available when
+      --  Gigi processes Inspection_Point.
+      --  When this requirement isn't met, turn the pragma into a no-op.
+
+      Assoc := First (Pragma_Argument_Associations (N));
+      while Present (Assoc) loop
+
+         if Present (Freeze_Node (Entity (Expression (Assoc)))) and then
+           not Is_Frozen (Entity (Expression (Assoc)))
+         then
+            Error_Msg_NE ("??inspection point references unfrozen object &",
+              Assoc,
+              Entity (Expression (Assoc)));
+            Remove_Inspection_Point := True;
+         end if;
+
+         Next (Assoc);
+      end loop;
+
+      if Remove_Inspection_Point then
+         Error_Msg_N ("\pragma will be ignored", N);
+
+         --  We can't just remove the pragma from the tree as it might be
+         --  iterated over by the caller. Turn it into a null statement
+         --  instead.
+
+         Rewrite (N, Make_Null_Statement (Sloc (N)));
+      end if;
    end Expand_Pragma_Inspection_Point;
 
    --------------------------------------
@@ -2831,7 +2860,7 @@ package body Exp_Prag is
 
    procedure Expand_Pragma_Subprogram_Variant
      (Prag       : Node_Id;
-      Subp_Id    : Node_Id;
+      Subp_Id    : Entity_Id;
       Body_Decls : List_Id)
    is
       Curr_Decls : List_Id;

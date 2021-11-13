@@ -338,7 +338,20 @@ c_common_has_attribute (cpp_reader *pfile, bool std_syntax)
 	      tree attr_id
 		= get_identifier ((const char *)
 				  cpp_token_as_text (pfile, nxt_token));
-	      attr_name = build_tree_list (attr_ns, attr_id);
+	      attr_id = canonicalize_attr_name (attr_id);
+	      if (c_dialect_cxx ())
+		{
+		  /* OpenMP attributes need special handling.  */
+		  if ((flag_openmp || flag_openmp_simd)
+		      && is_attribute_p ("omp", attr_ns)
+		      && (is_attribute_p ("directive", attr_id)
+			  || is_attribute_p ("sequence", attr_id)))
+		    result = 1;
+		}
+	      if (result)
+		attr_name = NULL_TREE;
+	      else
+		attr_name = build_tree_list (attr_ns, attr_id);
 	    }
 	  else
 	    {
@@ -603,7 +616,11 @@ c_lex_with_flags (tree *value, location_t *loc, unsigned char *cpp_flags,
 	else if (ISGRAPH (c))
 	  error_at (*loc, "stray %qc in program", (int) c);
 	else
-	  error_at (*loc, "stray %<\\%o%> in program", (int) c);
+	  {
+	    rich_location rich_loc (line_table, *loc);
+	    rich_loc.set_escape_on_output (true);
+	    error_at (&rich_loc, "stray %<\\%o%> in program", (int) c);
+	  }
       }
       goto retry;
 

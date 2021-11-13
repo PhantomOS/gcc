@@ -1949,7 +1949,7 @@ predict_loops (void)
 
   /* Try to predict out blocks in a loop that are not part of a
      natural loop.  */
-  FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+  for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
     {
       basic_block bb, *bbs;
       unsigned j, n_exits = 0;
@@ -4111,8 +4111,7 @@ pass_profile::execute (function *fun)
     profile_status_for_fn (fun) = PROFILE_GUESSED;
  if (dump_file && (dump_flags & TDF_DETAILS))
    {
-     class loop *loop;
-     FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+     for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
        if (loop->header->count.initialized_p ())
          fprintf (dump_file, "Loop got predicted %d to iterate %i times.\n",
        	   loop->num,
@@ -4287,8 +4286,7 @@ rebuild_frequencies (void)
 
   if (profile_status_for_fn (cfun) == PROFILE_GUESSED)
     {
-      loop_optimizer_init (0);
-      mark_irreducible_loops ();
+      loop_optimizer_init (LOOPS_HAVE_MARKED_IRREDUCIBLE_REGIONS);
       connect_infinite_loops_to_exit ();
       estimate_bb_frequencies (true);
       remove_fake_exit_edges ();
@@ -4481,6 +4479,43 @@ force_edge_cold (edge e, bool impossible)
 	fprintf (dump_file, "Giving up on making bb %i %s.\n", e->src->index,
 		 impossible ? "impossible" : "cold");
     }
+}
+
+/* Change E's probability to NEW_E_PROB, redistributing the probabilities
+   of other outgoing edges proportionally.
+
+   Note that this function does not change the profile counts of any
+   basic blocks.  The caller must do that instead, using whatever
+   information it has about the region that needs updating.  */
+
+void
+change_edge_frequency (edge e, profile_probability new_e_prob)
+{
+  profile_probability old_e_prob = e->probability;
+  profile_probability old_other_prob = old_e_prob.invert ();
+  profile_probability new_other_prob = new_e_prob.invert ();
+
+  e->probability = new_e_prob;
+  profile_probability cumulative_prob = new_e_prob;
+
+  unsigned int num_other = EDGE_COUNT (e->src->succs) - 1;
+  edge other_e;
+  edge_iterator ei;
+  FOR_EACH_EDGE (other_e, ei, e->src->succs)
+    if (other_e != e)
+      {
+	num_other -= 1;
+	if (num_other == 0)
+	  /* Ensure that the probabilities add up to 1 without
+	     rounding error.  */
+	  other_e->probability = cumulative_prob.invert ();
+	else
+	  {
+	    other_e->probability /= old_other_prob;
+	    other_e->probability *= new_other_prob;
+	    cumulative_prob += other_e->probability;
+	  }
+      }
 }
 
 #if CHECKING_P

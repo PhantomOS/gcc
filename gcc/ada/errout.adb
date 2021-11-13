@@ -106,15 +106,15 @@ package body Errout is
       Opan     : Source_Span;
       Msg_Cont : Boolean;
       Node     : Node_Id);
-   --  This is the low level routine used to post messages after dealing with
+   --  This is the low-level routine used to post messages after dealing with
    --  the issue of messages placed on instantiations (which get broken up
-   --  into separate calls in Error_Msg). Sptr is the location on which the
+   --  into separate calls in Error_Msg). Span is the location on which the
    --  flag will be placed in the output. In the case where the flag is on
    --  the template, this points directly to the template, not to one of the
-   --  instantiation copies of the template. Optr is the original location
+   --  instantiation copies of the template. Opan is the original location
    --  used to flag the error, and this may indeed point to an instantiation
-   --  copy. So typically we can see Optr pointing to the template location
-   --  in an instantiation copy when Sptr points to the source location of
+   --  copy. So typically we can see Opan pointing to the template location
+   --  in an instantiation copy when Span points to the source location of
    --  the actual instantiation (i.e the line with the new). Msg_Cont is
    --  set true if this is a continuation message. Node is the relevant
    --  Node_Id for this message, to be used to compute the enclosing entity if
@@ -129,6 +129,11 @@ package body Errout is
    --  message is suppressed if the node already has an error posted on it,
    --  or if it refers to an Etype that has an error posted on it, or if
    --  it references an Entity that has an error posted on it.
+
+   procedure Output_JSON_Message (Error_Id : Error_Msg_Id);
+   --  Output error message Error_Id and any subsequent continuation message
+   --  using a JSON format similar to the one GCC uses when passed
+   --  -fdiagnostics-format=json.
 
    procedure Output_Source_Line
      (L     : Physical_Line_Number;
@@ -206,12 +211,9 @@ package body Errout is
    --  This is called for warning messages only (so Warning_Msg_Char is set)
    --  and returns a corresponding string to use at the beginning of generated
    --  auxiliary messages, such as "in instantiation at ...".
-   --    'a' .. 'z'   returns "?x?"
-   --    'A' .. 'Z'   returns "?X?"
-   --    '*'          returns "?*?"
-   --    '$'          returns "?$?info: "
-   --    ' '          returns " "
-   --  No other settings are valid
+   --    "?"     returns "??"
+   --    " "     returns "?"
+   --    other   trimmed, prefixed and suffixed with "?".
 
    -----------------------
    -- Change_Error_Text --
@@ -670,22 +672,22 @@ package body Errout is
    end Error_Msg_Ada_2012_Feature;
 
    --------------------------------
-   -- Error_Msg_Ada_2020_Feature --
+   -- Error_Msg_Ada_2022_Feature --
    --------------------------------
 
-   procedure Error_Msg_Ada_2020_Feature (Feature : String; Loc : Source_Ptr) is
+   procedure Error_Msg_Ada_2022_Feature (Feature : String; Loc : Source_Ptr) is
    begin
-      if Ada_Version < Ada_2020 then
-         Error_Msg (Feature & " is an Ada 2020 feature", Loc);
+      if Ada_Version < Ada_2022 then
+         Error_Msg (Feature & " is an Ada 2022 feature", Loc);
 
          if No (Ada_Version_Pragma) then
-            Error_Msg ("\unit must be compiled with -gnat2020 switch", Loc);
+            Error_Msg ("\unit must be compiled with -gnat2022 switch", Loc);
          else
             Error_Msg_Sloc := Sloc (Ada_Version_Pragma);
             Error_Msg ("\incompatible with Ada version set#", Loc);
          end if;
       end if;
-   end Error_Msg_Ada_2020_Feature;
+   end Error_Msg_Ada_2022_Feature;
 
    ------------------
    -- Error_Msg_AP --
@@ -881,6 +883,19 @@ package body Errout is
                               Last  => Last_Sloc (Lst)));
    end Error_Msg_FE;
 
+   ------------------------------
+   -- Error_Msg_GNAT_Extension --
+   ------------------------------
+
+   procedure Error_Msg_GNAT_Extension (Extension : String) is
+      Loc : constant Source_Ptr := Token_Ptr;
+   begin
+      if not Extensions_Allowed then
+         Error_Msg (Extension & " is a 'G'N'A'T specific extension", Loc);
+         Error_Msg ("\unit must be compiled with -gnatX switch", Loc);
+      end if;
+   end Error_Msg_GNAT_Extension;
+
    ------------------------
    -- Error_Msg_Internal --
    ------------------------
@@ -1027,7 +1042,7 @@ package body Errout is
          if In_Extended_Main_Source_Unit (Sptr) then
             null;
 
-         --  If the main unit has not been read yet. the warning must be on
+         --  If the main unit has not been read yet. The warning must be on
          --  a configuration file: gnat.adc or user-defined. This means we
          --  are not parsing the main unit yet, so skip following checks.
 
@@ -1159,7 +1174,7 @@ package body Errout is
                   Errors.Table (Cur_Msg).Warn := True;
                   Errors.Table (Cur_Msg).Warn_Chr := Warning_Msg_Char;
 
-               elsif Warning_Msg_Char /= ' ' then
+               elsif Warning_Msg_Char /= "  " then
                   Errors.Table (Cur_Msg).Warn_Chr := Warning_Msg_Char;
                end if;
             end if;
@@ -1785,7 +1800,7 @@ package body Errout is
                        | N_Declaration
                        | N_Access_To_Subprogram_Definition
                        | N_Generic_Instantiation
-                       | N_Subprogram_Declaration
+                       | N_Later_Decl_Item
                        | N_Use_Package_Clause
                        | N_Array_Type_Definition
                        | N_Renaming_Declaration
@@ -2055,6 +2070,158 @@ package body Errout is
       end if;
    end OK_Node;
 
+   -------------------------
+   -- Output_JSON_Message --
+   -------------------------
+
+   procedure Output_JSON_Message (Error_Id : Error_Msg_Id) is
+
+      function Is_Continuation (E : Error_Msg_Id) return Boolean;
+      --  Return True if E is a continuation message.
+
+      procedure Write_JSON_Escaped_String (Str : String_Ptr);
+      --  Write each character of Str, taking care of preceding each quote and
+      --  backslash with a backslash. Note that this escaping differs from what
+      --  GCC does.
+      --
+      --  Indeed, the JSON specification mandates encoding wide characters
+      --  either as their direct UTF-8 representation or as their escaped
+      --  UTF-16 surrogate pairs representation. GCC seems to prefer escaping -
+      --  we choose to use the UTF-8 representation instead.
+
+      procedure Write_JSON_Location (Sptr : Source_Ptr);
+      --  Write Sptr as a JSON location, an object containing a file attribute,
+      --  a line number and a column number.
+
+      procedure Write_JSON_Span (Span : Source_Span);
+      --  Write Span as a JSON span, an object containing a "caret" attribute
+      --  whose value is the JSON location of Span.Ptr. If Span.First and
+      --  Span.Last are different from Span.Ptr, they will be printed as JSON
+      --  locations under the names "start" and "finish".
+
+      -----------------------
+      --  Is_Continuation  --
+      -----------------------
+
+      function Is_Continuation (E : Error_Msg_Id) return Boolean is
+      begin
+         return E <= Last_Error_Msg and then Errors.Table (E).Msg_Cont;
+      end Is_Continuation;
+
+      -------------------------------
+      -- Write_JSON_Escaped_String --
+      -------------------------------
+
+      procedure Write_JSON_Escaped_String (Str : String_Ptr) is
+      begin
+         for C of Str.all loop
+            if C = '"' or else C = '\' then
+               Write_Char ('\');
+            end if;
+
+            Write_Char (C);
+         end loop;
+      end Write_JSON_Escaped_String;
+
+      -------------------------
+      -- Write_JSON_Location --
+      -------------------------
+
+      procedure Write_JSON_Location (Sptr : Source_Ptr) is
+      begin
+         Write_Str ("{""file"":""");
+         Write_Name (Full_Ref_Name (Get_Source_File_Index (Sptr)));
+         Write_Str (""",""line"":");
+         Write_Int (Pos (Get_Physical_Line_Number (Sptr)));
+         Write_Str (", ""column"":");
+         Write_Int (Nat (Get_Column_Number (Sptr)));
+         Write_Str ("}");
+      end Write_JSON_Location;
+
+      ---------------------
+      -- Write_JSON_Span --
+      ---------------------
+
+      procedure Write_JSON_Span (Span : Source_Span) is
+      begin
+         Write_Str ("{""caret"":");
+         Write_JSON_Location (Span.Ptr);
+
+         if Span.Ptr /= Span.First then
+            Write_Str (",""start"":");
+            Write_JSON_Location (Span.First);
+         end if;
+
+         if Span.Ptr /= Span.Last then
+            Write_Str (",""finish"":");
+            Write_JSON_Location (Span.Last);
+         end if;
+
+         Write_Str ("}");
+      end Write_JSON_Span;
+
+      --  Local Variables
+
+      E : Error_Msg_Id := Error_Id;
+
+      Print_Continuations : constant Boolean := not Is_Continuation (E);
+      --  Do not print continuations messages as children of the current
+      --  message if the current message is a continuation message.
+
+   --  Start of processing for Output_JSON_Message
+
+   begin
+
+      --  Print message kind
+
+      Write_Str ("{""kind"":");
+
+      if Errors.Table (E).Warn and then not Errors.Table (E).Warn_Err then
+         Write_Str ("""warning""");
+      elsif Errors.Table (E).Info or else Errors.Table (E).Check then
+         Write_Str ("""note""");
+      else
+         Write_Str ("""error""");
+      end if;
+
+      --  Print message location
+
+      Write_Str (",""locations"":[");
+      Write_JSON_Span (Errors.Table (E).Sptr);
+
+      if Errors.Table (E).Optr /= Errors.Table (E).Sptr.Ptr then
+         Write_Str (",{""caret"":");
+         Write_JSON_Location (Errors.Table (E).Optr);
+         Write_Str ("}");
+      end if;
+
+      --  Print message content
+
+      Write_Str ("],""message"":""");
+      Write_JSON_Escaped_String (Errors.Table (E).Text);
+      Write_Str ("""");
+
+      E := E + 1;
+
+      if Print_Continuations and then Is_Continuation (E) then
+
+         Write_Str (",""children"": [");
+         Output_JSON_Message (E);
+         E := E + 1;
+
+         while Is_Continuation (E) loop
+            Write_Str (", ");
+            Output_JSON_Message (E);
+            E := E + 1;
+         end loop;
+
+         Write_Str ("]");
+
+      end if;
+
+      Write_Str ("}");
+   end Output_JSON_Message;
+
    ---------------------
    -- Output_Messages --
    ---------------------
@@ -2303,7 +2470,8 @@ package body Errout is
          function Get_Line_End
            (Buf : Source_Buffer_Ptr;
             Loc : Source_Ptr) return Source_Ptr;
-         --  Get the source location for the end of the line in Buf for Loc
+         --  Get the source location for the end of the line in Buf for Loc. If
+         --  Loc is past the end of Buf already, return Buf'Last.
 
          function Get_Line_Start
            (Buf : Source_Buffer_Ptr;
@@ -2345,9 +2513,9 @@ package body Errout is
            (Buf : Source_Buffer_Ptr;
             Loc : Source_Ptr) return Source_Ptr
          is
-            Cur_Loc : Source_Ptr := Loc;
+            Cur_Loc : Source_Ptr := Source_Ptr'Min (Loc, Buf'Last);
          begin
-            while Cur_Loc <= Buf'Last
+            while Cur_Loc < Buf'Last
               and then Buf (Cur_Loc) /= ASCII.LF
             loop
                Cur_Loc := Cur_Loc + 1;
@@ -2522,9 +2690,7 @@ package body Errout is
                      Write_Buffer_Char (Buf, Cur_Loc);
                   end if;
 
-                  Cur_Loc := Cur_Loc + 1;
-
-                  if Buf (Cur_Loc - 1) = ASCII.LF then
+                  if Buf (Cur_Loc) = ASCII.LF then
                      Cur_Line := Cur_Line + 1;
 
                      --  Output ... for skipped lines
@@ -2549,6 +2715,8 @@ package body Errout is
                            Width);
                      end if;
                   end if;
+
+                  Cur_Loc := Cur_Loc + 1;
                end loop;
             end;
 
@@ -2615,9 +2783,46 @@ package body Errout is
          Current_Error_Source_File := No_Source_File;
       end if;
 
+      if Opt.JSON_Output then
+         Set_Standard_Error;
+
+         E := First_Error_Msg;
+
+         --  Find first printable message
+
+         while E /= No_Error_Msg and then Errors.Table (E).Deleted loop
+            E := Errors.Table (E).Next;
+         end loop;
+
+         Write_Char ('[');
+
+         if E /= No_Error_Msg then
+
+            Output_JSON_Message (E);
+
+            E := Errors.Table (E).Next;
+
+            --  Skip deleted messages.
+            --  Also skip continuation messages, as they have already been
+            --  printed along the message they're attached to.
+
+            while E /= No_Error_Msg
+              and then not Errors.Table (E).Deleted
+              and then not Errors.Table (E).Msg_Cont
+            loop
+               Write_Char (',');
+               Output_JSON_Message (E);
+               E := Errors.Table (E).Next;
+            end loop;
+         end if;
+
+         Write_Char (']');
+
+         Set_Standard_Output;
+
       --  Brief Error mode
 
-      if Brief_Output or (not Full_List and not Verbose_Mode) then
+      elsif Brief_Output or (not Full_List and not Verbose_Mode) then
          Set_Standard_Error;
 
          E := First_Error_Msg;
@@ -2899,7 +3104,9 @@ package body Errout is
          Write_Error_Summary;
       end if;
 
-      Write_Max_Errors;
+      if not Opt.JSON_Output then
+         Write_Max_Errors;
+      end if;
 
       --  Even though Warning_Info_Messages are a subclass of warnings, they
       --  must not be treated as errors when -gnatwe is in effect.
@@ -3218,7 +3425,7 @@ package body Errout is
          --  For standard locations, always use mixed case
 
          if Loc <= No_Location then
-            Set_Casing (Mixed_Case);
+            Set_Casing (Buf, Mixed_Case);
 
          else
             --  Determine if the reference we are dealing with corresponds to
@@ -3254,11 +3461,6 @@ package body Errout is
             end if;
          end if;
       end;
-   end Adjust_Name_Case;
-
-   procedure Adjust_Name_Case (Loc : Source_Ptr) is
-   begin
-      Adjust_Name_Case (Global_Name_Buffer, Loc);
    end Adjust_Name_Case;
 
    ---------------------------
@@ -3397,15 +3599,9 @@ package body Errout is
       end if;
 
       --  The following assignment ensures that a second ampersand insertion
-      --  character will correspond to the Error_Msg_Node_2 parameter. We
-      --  suppress possible validity checks in case operating in -gnatVa mode,
-      --  and Error_Msg_Node_2 is not needed and has not been set.
+      --  character will correspond to the Error_Msg_Node_2 parameter.
 
-      declare
-         pragma Suppress (Range_Check);
-      begin
-         Error_Msg_Node_1 := Error_Msg_Node_2;
-      end;
+      Error_Msg_Node_1 := Error_Msg_Node_2;
    end Set_Msg_Insertion_Node;
 
    --------------------------------------
@@ -3585,15 +3781,9 @@ package body Errout is
       end if;
 
       --  The following assignment ensures that a second percent insertion
-      --  character will correspond to the Error_Msg_Unit_2 parameter. We
-      --  suppress possible validity checks in case operating in -gnatVa mode,
-      --  and Error_Msg_Unit_2 is not needed and has not been set.
+      --  character will correspond to the Error_Msg_Unit_2 parameter.
 
-      declare
-         pragma Suppress (Range_Check);
-      begin
-         Error_Msg_Unit_1 := Error_Msg_Unit_2;
-      end;
+      Error_Msg_Unit_1 := Error_Msg_Unit_2;
    end Set_Msg_Insertion_Unit_Name;
 
    ------------------
@@ -3734,12 +3924,15 @@ package body Errout is
       P : Natural;     -- Current index;
 
       procedure Skip_Msg_Insertion_Warning (C : Character);
-      --  Deal with ? ?? ?x? ?X? ?*? ?$? insertion sequences (and the same
+      --  Skip the ? ?? ?x? ?*? ?$? insertion sequences (and the same
       --  sequences using < instead of ?). The caller has already bumped
       --  the pointer past the initial ? or < and C is set to this initial
       --  character (? or <). This procedure skips past the rest of the
       --  sequence. We do not need to set Msg_Insertion_Char, since this
       --  was already done during the message prescan.
+      --  No validity check is performed as the insertion sequence is
+      --  supposed to be sane. See Prescan_Message.Parse_Message_Class in
+      --  erroutc.adb for the validity checks.
 
       --------------------------------
       -- Skip_Msg_Insertion_Warning --
@@ -3750,17 +3943,16 @@ package body Errout is
          if P <= Text'Last and then Text (P) = C then
             P := P + 1;
 
-         elsif P + 1 <= Text'Last
-           and then (Text (P) in 'a' .. 'z'
-                       or else
-                     Text (P) in 'A' .. 'Z'
-                       or else
-                     Text (P) = '*'
-                       or else
-                     Text (P) = '$')
-           and then Text (P + 1) = C
+         elsif P < Text'Last and then Text (P + 1) = C
+           and then Text (P) in 'a' .. 'z' | '*' | '$'
          then
             P := P + 2;
+
+         elsif P + 1 < Text'Last and then Text (P + 2) = C
+           and then Text (P) in '.' | '_'
+           and then Text (P + 1) in 'a' .. 'z'
+         then
+            P := P + 3;
          end if;
       end Skip_Msg_Insertion_Warning;
 
@@ -4211,19 +4403,15 @@ package body Errout is
 
    function Warn_Insertion return String is
    begin
-      case Warning_Msg_Char is
-         when '?' =>
-            return "??";
-
-         when 'a' .. 'z' | 'A' .. 'Z' | '*' | '$' =>
-            return '?' & Warning_Msg_Char & '?';
-
-         when ' ' =>
-            return "?";
-
-         when others =>
-            raise Program_Error;
-      end case;
+      if Warning_Msg_Char = "? " then
+         return "??";
+      elsif Warning_Msg_Char = "  " then
+         return "?";
+      elsif Warning_Msg_Char (2) = ' ' then
+         return '?' & Warning_Msg_Char (1) & '?';
+      else
+         return '?' & Warning_Msg_Char & '?';
+      end if;
    end Warn_Insertion;
 
 end Errout;

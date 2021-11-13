@@ -33,6 +33,7 @@
 #pragma GCC system_header
 
 #include <bits/hashtable_policy.h>
+#include <bits/enable_special_members.h>
 #if __cplusplus > 201402L
 # include <bits/node_handle.h>
 #endif
@@ -40,6 +41,7 @@
 namespace std _GLIBCXX_VISIBILITY(default)
 {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
+/// @cond undocumented
 
   template<typename _Tp, typename _Hash>
     using __cache_default
@@ -47,6 +49,16 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 		       __is_fast_hash<_Hash>,
 		       // Mandatory to have erase not throwing.
 		       __is_nothrow_invocable<const _Hash&, const _Tp&>>>;
+
+  // Helper to conditionally delete the default constructor.
+  // The _Hash_node_base type is used to distinguish this specialization
+  // from any other potentially-overlapping subobjects of the hashtable.
+  template<typename _Equal, typename _Hash, typename _Allocator>
+    using _Hashtable_enable_default_ctor
+      = _Enable_default_constructor<__and_<is_default_constructible<_Equal>,
+				       is_default_constructible<_Hash>,
+				       is_default_constructible<_Allocator>>{},
+				    __detail::_Hash_node_base>;
 
   /**
    *  Primary class template _Hashtable.
@@ -183,7 +195,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       private __detail::_Hashtable_alloc<
 	__alloc_rebind<_Alloc,
 		       __detail::_Hash_node<_Value,
-					    _Traits::__hash_cached::value>>>
+					    _Traits::__hash_cached::value>>>,
+      private _Hashtable_enable_default_ctor<_Equal, _Hash, _Alloc>
     {
       static_assert(is_same<typename remove_cv<_Value>::type, _Value>::value,
 	  "unordered container must have a non-const, non-volatile value_type");
@@ -215,6 +228,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 					      _Equal, _Hash,
 					      _RangeHash, _Unused,
 					      _RehashPolicy, _Traits>;
+      using __enable_default_ctor
+	= _Hashtable_enable_default_ctor<_Equal, _Hash, _Alloc>;
 
     public:
       typedef _Key						key_type;
@@ -303,8 +318,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
       template<typename _Ht>
 	static constexpr
-	typename conditional<std::is_lvalue_reference<_Ht>::value,
-			     const value_type&, value_type&&>::type
+	__conditional_t<std::is_lvalue_reference<_Ht>::value,
+			const value_type&, value_type&&>
 	__fwd_value_for(value_type& __val) noexcept
 	{ return std::move(__val); }
 
@@ -314,14 +329,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       // access it.
       struct __hash_code_base_access : __hash_code_base
       { using __hash_code_base::_M_bucket_index; };
-
-      // Getting a bucket index from a node shall not throw because it is used
-      // in methods (erase, swap...) that shall not throw.
-      static_assert(noexcept(declval<const __hash_code_base_access&>()
-			._M_bucket_index(declval<const __node_value_type&>(),
-					 (std::size_t)0)),
-		    "Cache the hash code or qualify your functors involved"
-		    " in hash code and bucket index computation with noexcept");
 
       // To get bucket index we need _RangeHash not to throw.
       static_assert(is_nothrow_default_constructible<_RangeHash>::value,
@@ -471,7 +478,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       _Hashtable(const _Hash& __h, const _Equal& __eq,
 		 const allocator_type& __a)
       : __hashtable_base(__h, __eq),
-	__hashtable_alloc(__node_alloc_type(__a))
+	__hashtable_alloc(__node_alloc_type(__a)),
+	__enable_default_ctor(_Enable_default_constructor_tag{})
       { }
 
       template<bool _No_realloc = true>
@@ -538,7 +546,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
       explicit
       _Hashtable(const allocator_type& __a)
-      : __hashtable_alloc(__node_alloc_type(__a))
+      : __hashtable_alloc(__node_alloc_type(__a)),
+	__enable_default_ctor(_Enable_default_constructor_tag{})
       { }
 
       template<typename _InputIterator>
@@ -735,7 +744,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       std::pair<const_iterator, const_iterator>
       equal_range(const key_type& __k) const;
 
-#if __cplusplus > 201702L
+#if __cplusplus >= 202002L
+#define __cpp_lib_generic_unordered_lookup 201811L
+
       template<typename _Kt,
 	       typename = __has_is_transparent_t<_Hash, _Kt>,
 	       typename = __has_is_transparent_t<_Equal, _Kt>>
@@ -765,7 +776,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	       typename = __has_is_transparent_t<_Equal, _Kt>>
 	pair<const_iterator, const_iterator>
 	_M_equal_range_tr(const _Kt& __k) const;
-#endif
+#endif // C++20
 
     private:
       // Bucket index computation helpers.
@@ -857,10 +868,10 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	_M_insert_unique(_Kt&&, _Arg&&, const _NodeGenerator&);
 
       template<typename _Kt>
-	static typename conditional<
+	static __conditional_t<
 	  __and_<__is_nothrow_invocable<_Hash&, const key_type&>,
 		 __not_<__is_nothrow_invocable<_Hash&, _Kt>>>::value,
-	  key_type, _Kt&&>::type
+	  key_type, _Kt&&>
 	_S_forward_key(_Kt&& __k)
 	{ return std::forward<_Kt>(__k); }
 
@@ -1054,14 +1065,14 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       /// Merge from a compatible container into one with unique keys.
       template<typename _Compatible_Hashtable>
 	void
-	_M_merge_unique(_Compatible_Hashtable& __src) noexcept
+	_M_merge_unique(_Compatible_Hashtable& __src)
 	{
 	  static_assert(is_same_v<typename _Compatible_Hashtable::node_type,
 	      node_type>, "Node types are compatible");
 	  __glibcxx_assert(get_allocator() == __src.get_allocator());
 
 	  auto __n_elt = __src.size();
-	  for (auto __i = __src.begin(), __end = __src.end(); __i != __end;)
+	  for (auto __i = __src.cbegin(), __end = __src.cend(); __i != __end;)
 	    {
 	      auto __pos = __i++;
 	      const key_type& __k = _ExtractKey{}(*__pos);
@@ -1082,15 +1093,22 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       /// Merge from a compatible container into one with equivalent keys.
       template<typename _Compatible_Hashtable>
 	void
-	_M_merge_multi(_Compatible_Hashtable& __src) noexcept
+	_M_merge_multi(_Compatible_Hashtable& __src)
 	{
 	  static_assert(is_same_v<typename _Compatible_Hashtable::node_type,
 	      node_type>, "Node types are compatible");
 	  __glibcxx_assert(get_allocator() == __src.get_allocator());
 
 	  this->reserve(size() + __src.size());
-	  for (auto __i = __src.begin(), __end = __src.end(); __i != __end;)
-	    _M_reinsert_node_multi(cend(), __src.extract(__i++));
+	  for (auto __i = __src.cbegin(), __end = __src.cend(); __i != __end;)
+	    {
+	      auto __pos = __i++;
+	      const key_type& __k = _ExtractKey{}(*__pos);
+	      __hash_code __code = this->_M_hash_code(__k);
+	      auto __nh = __src.extract(__pos);
+	      _M_insert_multi_node(nullptr, __code, __nh._M_ptr);
+	      __nh._M_ptr = nullptr;
+	    }
 	}
 #endif // C++17
 
@@ -1420,6 +1438,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       __rehash_base(__ht),
       __hashtable_alloc(
 	__node_alloc_traits::_S_select_on_copy(__ht._M_node_allocator())),
+      __enable_default_ctor(__ht),
       _M_buckets(nullptr),
       _M_bucket_count(__ht._M_bucket_count),
       _M_element_count(__ht._M_element_count),
@@ -1442,6 +1461,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       __map_base(__ht),
       __rehash_base(__ht),
       __hashtable_alloc(std::move(__a)),
+      __enable_default_ctor(__ht),
       _M_buckets(__ht._M_buckets),
       _M_bucket_count(__ht._M_bucket_count),
       _M_before_begin(__ht._M_before_begin._M_nxt),
@@ -1472,6 +1492,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       __map_base(__ht),
       __rehash_base(__ht),
       __hashtable_alloc(__node_alloc_type(__a)),
+      __enable_default_ctor(__ht),
       _M_buckets(),
       _M_bucket_count(__ht._M_bucket_count),
       _M_element_count(__ht._M_element_count),
@@ -1493,6 +1514,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       __map_base(__ht),
       __rehash_base(__ht),
       __hashtable_alloc(std::move(__a)),
+      __enable_default_ctor(__ht),
       _M_buckets(nullptr),
       _M_bucket_count(__ht._M_bucket_count),
       _M_element_count(__ht._M_element_count),
@@ -1518,9 +1540,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	{
 	  __alloc_node_gen_t __alloc_gen(*this);
 
-	  using _Fwd_Ht = typename
-	    conditional<__move_if_noexcept_cond<value_type>::value,
-			const _Hashtable&, _Hashtable&&>::type;
+	  using _Fwd_Ht = __conditional_t<
+	    __move_if_noexcept_cond<value_type>::value,
+	    const _Hashtable&, _Hashtable&&>;
 	  _M_assign(std::forward<_Fwd_Ht>(__ht), __alloc_gen);
 	  __ht.clear();
 	}
@@ -1534,6 +1556,15 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	       _Hash, _RangeHash, _Unused, _RehashPolicy, _Traits>::
     ~_Hashtable() noexcept
     {
+      // Getting a bucket index from a node shall not throw because it is used
+      // in methods (erase, swap...) that shall not throw. Need a complete
+      // type to check this, so do it in the destructor not at class scope.
+      static_assert(noexcept(declval<const __hash_code_base_access&>()
+			._M_bucket_index(declval<const __node_value_type&>(),
+					 (std::size_t)0)),
+		    "Cache the hash code or qualify your functors involved"
+		    " in hash code and bucket index computation with noexcept");
+
       clear();
       _M_deallocate_buckets();
     }
@@ -2523,6 +2554,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       = __enable_if_t<!__or_<is_integral<_Hash>, __is_allocator<_Hash>>::value>;
 #endif
 
+/// @endcond
 _GLIBCXX_END_NAMESPACE_VERSION
 } // namespace std
 

@@ -1250,6 +1250,7 @@ void gcc_sort_r (void *, size_t, size_t, sort_r_cmp_fn *, void *);
 void gcc_qsort (void *, size_t, size_t, int (*)(const void *, const void *));
 void gcc_stablesort (void *, size_t, size_t,
 		     int (*)(const void *, const void *));
+void gcc_stablesort_r (void *, size_t, size_t, sort_r_cmp_fn *, void *data);
 /* Redirect four-argument qsort calls to gcc_qsort; one-argument invocations
    correspond to vec::qsort, and use C qsort internally.  */
 #define PP_5th(a1, a2, a3, a4, a5, ...) a5
@@ -1302,6 +1303,19 @@ static inline bool
 startswith (const char *str, const char *prefix)
 {
   return strncmp (str, prefix, strlen (prefix)) == 0;
+}
+
+/* Return true if STR string ends with SUFFIX.  */
+
+static inline bool
+endswith (const char *str, const char *suffix)
+{
+  size_t str_len = strlen (str);
+  size_t suffix_len = strlen (suffix);
+  if (str_len < suffix_len)
+    return false;
+
+  return memcmp (str + str_len - suffix_len, suffix, suffix_len) == 0;
 }
 
 #endif /* ! GCC_SYSTEM_H */

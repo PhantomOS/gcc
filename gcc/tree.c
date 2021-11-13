@@ -68,6 +68,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-vector-builder.h"
 #include "gimple-fold.h"
 #include "escaped_string.h"
+#include "gimple-range.h"
 
 /* Tree code classes.  */
 
@@ -274,7 +275,7 @@ struct int_n_trees_t int_n_trees [NUM_INT_N_ENTS];
 
 bool tree_contains_struct[MAX_TREE_CODES][64];
 
-/* Number of operands for each OpenMP clause.  */
+/* Number of operands for each OMP clause.  */
 unsigned const char omp_clause_num_ops[] =
 {
   0, /* OMP_CLAUSE_ERROR  */
@@ -288,8 +289,9 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_COPYIN  */
   1, /* OMP_CLAUSE_COPYPRIVATE  */
   3, /* OMP_CLAUSE_LINEAR  */
+  1, /* OMP_CLAUSE_AFFINITY  */
   2, /* OMP_CLAUSE_ALIGNED  */
-  2, /* OMP_CLAUSE_ALLOCATE  */
+  3, /* OMP_CLAUSE_ALLOCATE  */
   1, /* OMP_CLAUSE_DEPEND  */
   1, /* OMP_CLAUSE_NONTEMPORAL  */
   1, /* OMP_CLAUSE_UNIFORM  */
@@ -328,7 +330,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_DIST_SCHEDULE  */
   0, /* OMP_CLAUSE_INBRANCH  */
   0, /* OMP_CLAUSE_NOTINBRANCH  */
-  1, /* OMP_CLAUSE_NUM_TEAMS  */
+  2, /* OMP_CLAUSE_NUM_TEAMS  */
   1, /* OMP_CLAUSE_THREAD_LIMIT  */
   0, /* OMP_CLAUSE_PROC_BIND  */
   1, /* OMP_CLAUSE_SAFELEN  */
@@ -348,6 +350,7 @@ unsigned const char omp_clause_num_ops[] =
   0, /* OMP_CLAUSE_DEFAULTMAP  */
   0, /* OMP_CLAUSE_ORDER  */
   0, /* OMP_CLAUSE_BIND  */
+  1, /* OMP_CLAUSE_FILTER  */
   1, /* OMP_CLAUSE__SIMDUID_  */
   0, /* OMP_CLAUSE__SIMT_  */
   0, /* OMP_CLAUSE_INDEPENDENT  */
@@ -359,6 +362,7 @@ unsigned const char omp_clause_num_ops[] =
   3, /* OMP_CLAUSE_TILE  */
   0, /* OMP_CLAUSE_IF_PRESENT */
   0, /* OMP_CLAUSE_FINALIZE */
+  0, /* OMP_CLAUSE_NOHOST */
 };
 
 const char * const omp_clause_code_name[] =
@@ -374,6 +378,7 @@ const char * const omp_clause_code_name[] =
   "copyin",
   "copyprivate",
   "linear",
+  "affinity",
   "aligned",
   "allocate",
   "depend",
@@ -434,6 +439,7 @@ const char * const omp_clause_code_name[] =
   "defaultmap",
   "order",
   "bind",
+  "filter",
   "_simduid_",
   "_simt_",
   "independent",
@@ -445,6 +451,7 @@ const char * const omp_clause_code_name[] =
   "tile",
   "if_present",
   "finalize",
+  "nohost",
 };
 
 
@@ -2044,7 +2051,7 @@ make_vector (unsigned log2_npatterns,
    are extracted from V, a vector of CONSTRUCTOR_ELT.  */
 
 tree
-build_vector_from_ctor (tree type, vec<constructor_elt, va_gc> *v)
+build_vector_from_ctor (tree type, const vec<constructor_elt, va_gc> *v)
 {
   if (vec_safe_length (v) == 0)
     return build_zero_cst (type);
@@ -5273,6 +5280,18 @@ build_decl (location_t loc, enum tree_code code, tree name,
   return t;
 }
 
+/* Create and return a DEBUG_EXPR_DECL node of the given TYPE.  */
+
+tree
+build_debug_expr_decl (tree type)
+{
+  tree vexpr = make_node (DEBUG_EXPR_DECL);
+  DECL_ARTIFICIAL (vexpr) = 1;
+  TREE_TYPE (vexpr) = type;
+  SET_DECL_MODE (vexpr, TYPE_MODE (type));
+  return vexpr;
+}
+
 /* Builds and returns function declaration with NAME and TYPE.  */
 
 tree
@@ -7630,7 +7649,8 @@ excess_precision_type (tree type)
   enum excess_precision_type requested_type
     = (flag_excess_precision == EXCESS_PRECISION_FAST
        ? EXCESS_PRECISION_TYPE_FAST
-       : EXCESS_PRECISION_TYPE_STANDARD);
+       : (flag_excess_precision == EXCESS_PRECISION_FLOAT16
+	  ? EXCESS_PRECISION_TYPE_FLOAT16 :EXCESS_PRECISION_TYPE_STANDARD));
 
   enum flt_eval_method target_flt_eval_method
     = targetm.c.excess_precision (requested_type);
@@ -9503,6 +9523,19 @@ build_common_builtin_nodes (void)
   tree tmp, ftype;
   int ecf_flags;
 
+  if (!builtin_decl_explicit_p (BUILT_IN_CLEAR_PADDING))
+    {
+      ftype = build_function_type_list (void_type_node,
+					ptr_type_node,
+					ptr_type_node,
+					integer_type_node,
+					NULL_TREE);
+      local_define_builtin ("__builtin_clear_padding", ftype,
+			    BUILT_IN_CLEAR_PADDING,
+			    "__builtin_clear_padding",
+			      ECF_LEAF | ECF_NOTHROW);
+    }
+
   if (!builtin_decl_explicit_p (BUILT_IN_UNREACHABLE)
       || !builtin_decl_explicit_p (BUILT_IN_ABORT))
     {
@@ -10282,7 +10315,7 @@ build_empty_stmt (location_t loc)
 }
 
 
-/* Build an OpenMP clause with code CODE.  LOC is the location of the
+/* Build an OMP clause with code CODE.  LOC is the location of the
    clause.  */
 
 tree
@@ -10716,6 +10749,35 @@ signed_type_for (tree type)
   return signed_or_unsigned_type_for (0, type);
 }
 
+/* - For VECTOR_TYPEs:
+    - The truth type must be a VECTOR_BOOLEAN_TYPE.
+    - The number of elements must match (known_eq).
+    - targetm.vectorize.get_mask_mode exists, and exactly
+      the same mode as the truth type.
+   - Otherwise, the truth type must be a BOOLEAN_TYPE
+     or useless_type_conversion_p to BOOLEAN_TYPE.  */
+bool
+is_truth_type_for (tree type, tree truth_type)
+{
+  machine_mode mask_mode = TYPE_MODE (truth_type);
+  machine_mode vmode = TYPE_MODE (type);
+  machine_mode tmask_mode;
+
+  if (TREE_CODE (type) == VECTOR_TYPE)
+    {
+      if (VECTOR_BOOLEAN_TYPE_P (truth_type)
+	  && known_eq (TYPE_VECTOR_SUBPARTS (type),
+		       TYPE_VECTOR_SUBPARTS (truth_type))
+	  && targetm.vectorize.get_mask_mode (vmode).exists (&tmask_mode)
+	  && tmask_mode == mask_mode)
+	return true;
+
+      return false;
+    }
+
+  return useless_type_conversion_p (boolean_type_node, truth_type);
+}
+
 /* If TYPE is a vector type, return a signed integer vector type with the
    same width and number of subparts. Otherwise return boolean_type_node.  */
 
@@ -11084,127 +11146,12 @@ walk_tree_1 (tree *tp, walk_tree_fn func, void *data,
       break;
 
     case OMP_CLAUSE:
-      switch (OMP_CLAUSE_CODE (*tp))
-	{
-	case OMP_CLAUSE_GANG:
-	  WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, 1));
-	  /* FALLTHRU */
-
-	case OMP_CLAUSE_ASYNC:
-	case OMP_CLAUSE_WAIT:
-	case OMP_CLAUSE_WORKER:
-	case OMP_CLAUSE_VECTOR:
-	case OMP_CLAUSE_NUM_GANGS:
-	case OMP_CLAUSE_NUM_WORKERS:
-	case OMP_CLAUSE_VECTOR_LENGTH:
-	case OMP_CLAUSE_PRIVATE:
-	case OMP_CLAUSE_SHARED:
-	case OMP_CLAUSE_FIRSTPRIVATE:
-	case OMP_CLAUSE_COPYIN:
-	case OMP_CLAUSE_COPYPRIVATE:
-	case OMP_CLAUSE_FINAL:
-	case OMP_CLAUSE_IF:
-	case OMP_CLAUSE_NUM_THREADS:
-	case OMP_CLAUSE_SCHEDULE:
-	case OMP_CLAUSE_UNIFORM:
-	case OMP_CLAUSE_DEPEND:
-	case OMP_CLAUSE_NONTEMPORAL:
-	case OMP_CLAUSE_NUM_TEAMS:
-	case OMP_CLAUSE_THREAD_LIMIT:
-	case OMP_CLAUSE_DEVICE:
-	case OMP_CLAUSE_DIST_SCHEDULE:
-	case OMP_CLAUSE_SAFELEN:
-	case OMP_CLAUSE_SIMDLEN:
-	case OMP_CLAUSE_ORDERED:
-	case OMP_CLAUSE_PRIORITY:
-	case OMP_CLAUSE_GRAINSIZE:
-	case OMP_CLAUSE_NUM_TASKS:
-	case OMP_CLAUSE_HINT:
-	case OMP_CLAUSE_TO_DECLARE:
-	case OMP_CLAUSE_LINK:
-	case OMP_CLAUSE_DETACH:
-	case OMP_CLAUSE_USE_DEVICE_PTR:
-	case OMP_CLAUSE_USE_DEVICE_ADDR:
-	case OMP_CLAUSE_IS_DEVICE_PTR:
-	case OMP_CLAUSE_INCLUSIVE:
-	case OMP_CLAUSE_EXCLUSIVE:
-	case OMP_CLAUSE__LOOPTEMP_:
-	case OMP_CLAUSE__REDUCTEMP_:
-	case OMP_CLAUSE__CONDTEMP_:
-	case OMP_CLAUSE__SCANTEMP_:
-	case OMP_CLAUSE__SIMDUID_:
-	  WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, 0));
-	  /* FALLTHRU */
-
-	case OMP_CLAUSE_INDEPENDENT:
-	case OMP_CLAUSE_NOWAIT:
-	case OMP_CLAUSE_DEFAULT:
-	case OMP_CLAUSE_UNTIED:
-	case OMP_CLAUSE_MERGEABLE:
-	case OMP_CLAUSE_PROC_BIND:
-	case OMP_CLAUSE_DEVICE_TYPE:
-	case OMP_CLAUSE_INBRANCH:
-	case OMP_CLAUSE_NOTINBRANCH:
-	case OMP_CLAUSE_FOR:
-	case OMP_CLAUSE_PARALLEL:
-	case OMP_CLAUSE_SECTIONS:
-	case OMP_CLAUSE_TASKGROUP:
-	case OMP_CLAUSE_NOGROUP:
-	case OMP_CLAUSE_THREADS:
-	case OMP_CLAUSE_SIMD:
-	case OMP_CLAUSE_DEFAULTMAP:
-	case OMP_CLAUSE_ORDER:
-	case OMP_CLAUSE_BIND:
-	case OMP_CLAUSE_AUTO:
-	case OMP_CLAUSE_SEQ:
-	case OMP_CLAUSE_TILE:
-	case OMP_CLAUSE__SIMT_:
-	case OMP_CLAUSE_IF_PRESENT:
-	case OMP_CLAUSE_FINALIZE:
-	  WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-
-	case OMP_CLAUSE_LASTPRIVATE:
-	  WALK_SUBTREE (OMP_CLAUSE_DECL (*tp));
-	  WALK_SUBTREE (OMP_CLAUSE_LASTPRIVATE_STMT (*tp));
-	  WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-
-	case OMP_CLAUSE_COLLAPSE:
-	  {
-	    int i;
-	    for (i = 0; i < 3; i++)
-	      WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, i));
-	    WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-	  }
-
-	case OMP_CLAUSE_LINEAR:
-	  WALK_SUBTREE (OMP_CLAUSE_DECL (*tp));
-	  WALK_SUBTREE (OMP_CLAUSE_LINEAR_STEP (*tp));
-	  WALK_SUBTREE (OMP_CLAUSE_LINEAR_STMT (*tp));
-	  WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-
-	case OMP_CLAUSE_ALIGNED:
-	case OMP_CLAUSE_ALLOCATE:
-	case OMP_CLAUSE_FROM:
-	case OMP_CLAUSE_TO:
-	case OMP_CLAUSE_MAP:
-	case OMP_CLAUSE__CACHE_:
-	  WALK_SUBTREE (OMP_CLAUSE_DECL (*tp));
-	  WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, 1));
-	  WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-
-	case OMP_CLAUSE_REDUCTION:
-	case OMP_CLAUSE_TASK_REDUCTION:
-	case OMP_CLAUSE_IN_REDUCTION:
-	  {
-	    int i;
-	    for (i = 0; i < 5; i++)
-	      WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, i));
-	    WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
-	  }
-
-	default:
-	  gcc_unreachable ();
-	}
+      {
+	int len = omp_clause_num_ops[OMP_CLAUSE_CODE (*tp)];
+	for (int i = 0; i < len; i++)
+	  WALK_SUBTREE (OMP_CLAUSE_OPERAND (*tp, i));
+	WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (*tp));
+      }
       break;
 
     case TARGET_EXPR:
@@ -11538,30 +11485,13 @@ hashval_t
 cl_option_hasher::hash (tree x)
 {
   const_tree const t = x;
-  const char *p;
-  size_t i;
-  size_t len = 0;
-  hashval_t hash = 0;
 
   if (TREE_CODE (t) == OPTIMIZATION_NODE)
-    {
-      p = (const char *)TREE_OPTIMIZATION (t);
-      len = sizeof (struct cl_optimization);
-    }
-
+    return cl_optimization_hash (TREE_OPTIMIZATION (t));
   else if (TREE_CODE (t) == TARGET_OPTION_NODE)
     return cl_target_option_hash (TREE_TARGET_OPTION (t));
-
   else
     gcc_unreachable ();
-
-  /* assume most opt flags are just 0/1, some are 2-3, and a few might be
-     something else.  */
-  for (i = 0; i < len; i++)
-    if (p[i])
-      hash = (hash << 4) ^ ((i << 2) | p[i]);
-
-  return hash;
 }
 
 /* Return nonzero if the value represented by *X (an OPTIMIZATION or
@@ -12142,6 +12072,78 @@ warn_deprecated_use (tree node, tree attr)
     }
 
   return w;
+}
+
+/* Error out with an identifier which was marked 'unavailable'. */
+void
+error_unavailable_use (tree node, tree attr)
+{
+  escaped_string msg;
+
+  if (node == 0)
+    return;
+
+  if (!attr)
+    {
+      if (DECL_P (node))
+	attr = DECL_ATTRIBUTES (node);
+      else if (TYPE_P (node))
+	{
+	  tree decl = TYPE_STUB_DECL (node);
+	  if (decl)
+	    attr = lookup_attribute ("unavailable",
+				     TYPE_ATTRIBUTES (TREE_TYPE (decl)));
+	}
+    }
+
+  if (attr)
+    attr = lookup_attribute ("unavailable", attr);
+
+  if (attr)
+    msg.escape (TREE_STRING_POINTER (TREE_VALUE (TREE_VALUE (attr))));
+
+  if (DECL_P (node))
+    {
+      auto_diagnostic_group d;
+      if (msg)
+	error ("%qD is unavailable: %s", node, (const char *) msg);
+      else
+	error ("%qD is unavailable", node);
+      inform (DECL_SOURCE_LOCATION (node), "declared here");
+    }
+  else if (TYPE_P (node))
+    {
+      tree what = NULL_TREE;
+      tree decl = TYPE_STUB_DECL (node);
+
+      if (TYPE_NAME (node))
+	{
+	  if (TREE_CODE (TYPE_NAME (node)) == IDENTIFIER_NODE)
+	    what = TYPE_NAME (node);
+	  else if (TREE_CODE (TYPE_NAME (node)) == TYPE_DECL
+		   && DECL_NAME (TYPE_NAME (node)))
+	    what = DECL_NAME (TYPE_NAME (node));
+	}
+
+      auto_diagnostic_group d;
+      if (what)
+	{
+	  if (msg)
+	    error ("%qE is unavailable: %s", what, (const char *) msg);
+	  else
+	    error ("%qE is unavailable", what);
+	}
+      else
+	{
+	  if (msg)
+	    error ("type is unavailable: %s", (const char *) msg);
+	  else
+	    error ("type is unavailable");
+	}
+
+      if (decl)
+	inform (DECL_SOURCE_LOCATION (decl), "declared here");
+    }
 }
 
 /* Return true if REF has a COMPONENT_REF with a bit-field field declaration
@@ -13831,8 +13833,8 @@ get_range_pos_neg (tree arg)
 
   if (TREE_CODE (arg) != SSA_NAME)
     return 3;
-  wide_int arg_min, arg_max;
-  while (get_range_info (arg, &arg_min, &arg_max) != VR_RANGE)
+  value_range r;
+  while (!get_global_range_query ()->range_of_expr (r, arg) || r.kind () != VR_RANGE)
     {
       gimple *g = SSA_NAME_DEF_STMT (arg);
       if (is_gimple_assign (g)
@@ -13858,16 +13860,16 @@ get_range_pos_neg (tree arg)
     {
       /* For unsigned values, the "positive" range comes
 	 below the "negative" range.  */
-      if (!wi::neg_p (wi::sext (arg_max, prec), SIGNED))
+      if (!wi::neg_p (wi::sext (r.upper_bound (), prec), SIGNED))
 	return 1;
-      if (wi::neg_p (wi::sext (arg_min, prec), SIGNED))
+      if (wi::neg_p (wi::sext (r.lower_bound (), prec), SIGNED))
 	return 2;
     }
   else
     {
-      if (!wi::neg_p (wi::sext (arg_min, prec), SIGNED))
+      if (!wi::neg_p (wi::sext (r.lower_bound (), prec), SIGNED))
 	return 1;
-      if (wi::neg_p (wi::sext (arg_max, prec), SIGNED))
+      if (wi::neg_p (wi::sext (r.upper_bound (), prec), SIGNED))
 	return 2;
     }
   return 3;
@@ -14304,16 +14306,27 @@ verify_type_context (location_t loc, type_context_kind context,
 	  || targetm.verify_type_context (loc, context, type, silent_p));
 }
 
-/* Return that NEW_ASM and DELETE_ASM name a valid pair of new and
-   delete operators.  */
+/* Return true if NEW_ASM and DELETE_ASM name a valid pair of new and
+   delete operators.  Return false if they may or may not name such
+   a pair and, when nonnull, set *PCERTAIN to true if they certainly
+   do not.  */
 
 bool
-valid_new_delete_pair_p (tree new_asm, tree delete_asm)
+valid_new_delete_pair_p (tree new_asm, tree delete_asm,
+			 bool *pcertain /* = NULL */)
 {
+  bool certain;
+  if (!pcertain)
+    pcertain = &certain;
+
   const char *new_name = IDENTIFIER_POINTER (new_asm);
   const char *delete_name = IDENTIFIER_POINTER (delete_asm);
   unsigned int new_len = IDENTIFIER_LENGTH (new_asm);
   unsigned int delete_len = IDENTIFIER_LENGTH (delete_asm);
+
+  /* The following failures are due to invalid names so they're not
+     considered certain mismatches.  */
+  *pcertain = false;
 
   if (new_len < 5 || delete_len < 6)
     return false;
@@ -14327,11 +14340,19 @@ valid_new_delete_pair_p (tree new_asm, tree delete_asm)
     ++delete_name, --delete_len;
   if (new_len < 4 || delete_len < 5)
     return false;
+
+  /* The following failures are due to names of user-defined operators
+     so they're also not considered certain mismatches.  */
+
   /* *_len is now just the length after initial underscores.  */
   if (new_name[0] != 'Z' || new_name[1] != 'n')
     return false;
   if (delete_name[0] != 'Z' || delete_name[1] != 'd')
     return false;
+
+  /* The following failures are certain mismatches.  */
+  *pcertain = true;
+
   /* _Znw must match _Zdl, _Zna must match _Zda.  */
   if ((new_name[2] != 'w' || delete_name[2] != 'l')
       && (new_name[2] != 'a' || delete_name[2] != 'a'))
@@ -14370,7 +14391,123 @@ valid_new_delete_pair_p (tree new_asm, tree delete_asm)
 	  && !memcmp (delete_name + 5, "St11align_val_tRKSt9nothrow_t", 29))
 	return true;
     }
+
+  /* The negative result is conservative.  */
+  *pcertain = false;
   return false;
+}
+
+/* Return the zero-based number corresponding to the argument being
+   deallocated if FNDECL is a deallocation function or an out-of-bounds
+   value if it isn't.  */
+
+unsigned
+fndecl_dealloc_argno (tree fndecl)
+{
+  /* A call to operator delete isn't recognized as one to a built-in.  */
+  if (DECL_IS_OPERATOR_DELETE_P (fndecl))
+    {
+      if (DECL_IS_REPLACEABLE_OPERATOR (fndecl))
+	return 0;
+
+      /* Avoid placement delete that's not been inlined.  */
+      tree fname = DECL_ASSEMBLER_NAME (fndecl);
+      if (id_equal (fname, "_ZdlPvS_")       // ordinary form
+	  || id_equal (fname, "_ZdaPvS_"))   // array form
+	return UINT_MAX;
+      return 0;
+    }
+
+  /* TODO: Handle user-defined functions with attribute malloc?  Handle
+     known non-built-ins like fopen?  */
+  if (fndecl_built_in_p (fndecl, BUILT_IN_NORMAL))
+    {
+      switch (DECL_FUNCTION_CODE (fndecl))
+	{
+	case BUILT_IN_FREE:
+	case BUILT_IN_REALLOC:
+	  return 0;
+	default:
+	  break;
+	}
+      return UINT_MAX;
+    }
+
+  tree attrs = DECL_ATTRIBUTES (fndecl);
+  if (!attrs)
+    return UINT_MAX;
+
+  for (tree atfree = attrs;
+       (atfree = lookup_attribute ("*dealloc", atfree));
+       atfree = TREE_CHAIN (atfree))
+    {
+      tree alloc = TREE_VALUE (atfree);
+      if (!alloc)
+	continue;
+
+      tree pos = TREE_CHAIN (alloc);
+      if (!pos)
+	return 0;
+
+      pos = TREE_VALUE (pos);
+      return TREE_INT_CST_LOW (pos) - 1;
+    }
+
+  return UINT_MAX;
+}
+
+/* If EXPR refers to a character array or pointer declared attribute
+   nonstring, return a decl for that array or pointer and set *REF
+   to the referenced enclosing object or pointer.  Otherwise return
+   null.  */
+
+tree
+get_attr_nonstring_decl (tree expr, tree *ref)
+{
+  tree decl = expr;
+  tree var = NULL_TREE;
+  if (TREE_CODE (decl) == SSA_NAME)
+    {
+      gimple *def = SSA_NAME_DEF_STMT (decl);
+
+      if (is_gimple_assign (def))
+	{
+	  tree_code code = gimple_assign_rhs_code (def);
+	  if (code == ADDR_EXPR
+	      || code == COMPONENT_REF
+	      || code == VAR_DECL)
+	    decl = gimple_assign_rhs1 (def);
+	}
+      else
+	var = SSA_NAME_VAR (decl);
+    }
+
+  if (TREE_CODE (decl) == ADDR_EXPR)
+    decl = TREE_OPERAND (decl, 0);
+
+  /* To simplify calling code, store the referenced DECL regardless of
+     the attribute determined below, but avoid storing the SSA_NAME_VAR
+     obtained above (it's not useful for dataflow purposes).  */
+  if (ref)
+    *ref = decl;
+
+  /* Use the SSA_NAME_VAR that was determined above to see if it's
+     declared nonstring.  Otherwise drill down into the referenced
+     DECL.  */
+  if (var)
+    decl = var;
+  else if (TREE_CODE (decl) == ARRAY_REF)
+    decl = TREE_OPERAND (decl, 0);
+  else if (TREE_CODE (decl) == COMPONENT_REF)
+    decl = TREE_OPERAND (decl, 1);
+  else if (TREE_CODE (decl) == MEM_REF)
+    return get_attr_nonstring_decl (TREE_OPERAND (decl, 0), ref);
+
+  if (DECL_P (decl)
+      && lookup_attribute ("nonstring", DECL_ATTRIBUTES (decl)))
+    return decl;
+
+  return NULL_TREE;
 }
 
 #if CHECKING_P
@@ -14424,7 +14561,7 @@ test_labels ()
    are given by VALS.  */
 
 static tree
-build_vector (tree type, vec<tree> vals MEM_STAT_DECL)
+build_vector (tree type, const vec<tree> &vals MEM_STAT_DECL)
 {
   gcc_assert (known_eq (vals.length (), TYPE_VECTOR_SUBPARTS (type)));
   tree_vector_builder builder (type, vals.length (), 1);
@@ -14435,7 +14572,7 @@ build_vector (tree type, vec<tree> vals MEM_STAT_DECL)
 /* Check that VECTOR_CST ACTUAL contains the elements in EXPECTED.  */
 
 static void
-check_vector_cst (vec<tree> expected, tree actual)
+check_vector_cst (const vec<tree> &expected, tree actual)
 {
   ASSERT_KNOWN_EQ (expected.length (),
 		   TYPE_VECTOR_SUBPARTS (TREE_TYPE (actual)));
@@ -14448,7 +14585,7 @@ check_vector_cst (vec<tree> expected, tree actual)
    and that its elements match EXPECTED.  */
 
 static void
-check_vector_cst_duplicate (vec<tree> expected, tree actual,
+check_vector_cst_duplicate (const vec<tree> &expected, tree actual,
 			    unsigned int npatterns)
 {
   ASSERT_EQ (npatterns, VECTOR_CST_NPATTERNS (actual));
@@ -14464,7 +14601,7 @@ check_vector_cst_duplicate (vec<tree> expected, tree actual,
    EXPECTED.  */
 
 static void
-check_vector_cst_fill (vec<tree> expected, tree actual,
+check_vector_cst_fill (const vec<tree> &expected, tree actual,
 		       unsigned int npatterns)
 {
   ASSERT_EQ (npatterns, VECTOR_CST_NPATTERNS (actual));
@@ -14479,7 +14616,7 @@ check_vector_cst_fill (vec<tree> expected, tree actual,
    and that its elements match EXPECTED.  */
 
 static void
-check_vector_cst_stepped (vec<tree> expected, tree actual,
+check_vector_cst_stepped (const vec<tree> &expected, tree actual,
 			  unsigned int npatterns)
 {
   ASSERT_EQ (npatterns, VECTOR_CST_NPATTERNS (actual));

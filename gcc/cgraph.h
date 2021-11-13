@@ -404,7 +404,8 @@ public:
   inline bool
   can_be_discarded_p (void)
   {
-    return (DECL_EXTERNAL (decl)
+    return ((DECL_EXTERNAL (decl)
+	     && !in_other_partition)
 	    || ((get_comdat_group ()
 		 || DECL_COMMON (decl)
 		 || (DECL_SECTION_NAME (decl) && DECL_WEAK (decl)))
@@ -700,6 +701,10 @@ struct GTY(()) ipa_replace_map
   tree new_tree;
   /* Parameter number to replace, when old_tree is NULL.  */
   int parm_num;
+  /* Set if the newly added reference should not be an address one, but a load
+     one from the operand of the ADDR_EXPR in NEW_TREE.  This is for cases when
+     the corresponding parameter p is used only as *p.  */
+  unsigned force_load_ref : 1;
 };
 
 enum cgraph_simd_clone_arg_type
@@ -949,7 +954,7 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
   /* Create callgraph node clone with new declaration.  The actual body will be
      copied later at compilation stage.  The name of the new clone will be
      constructed from the name of the original node, SUFFIX and NUM_SUFFIX.  */
-  cgraph_node *create_virtual_clone (vec<cgraph_edge *> redirect_callers,
+  cgraph_node *create_virtual_clone (const vec<cgraph_edge *> &redirect_callers,
 				     vec<ipa_replace_map *, va_gc> *tree_map,
 				     ipa_param_adjustments *param_adjustments,
 				     const char * suffix, unsigned num_suffix);
@@ -1002,13 +1007,16 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
      that will promote value of the attribute DECL_FUNCTION_SPECIFIC_TARGET
      of the declaration.
 
+     If VERSION_DECL is set true, use clone_function_name_numbered for the
+     function clone.  Otherwise, use clone_function_name.
+
      Return the new version's cgraph node.  */
   cgraph_node *create_version_clone_with_body
     (vec<cgraph_edge *> redirect_callers,
      vec<ipa_replace_map *, va_gc> *tree_map,
      ipa_param_adjustments *param_adjustments,
      bitmap bbs_to_copy, basic_block new_entry_block, const char *clone_name,
-     tree target_attributes = NULL_TREE);
+     tree target_attributes = NULL_TREE, bool version_decl = true);
 
   /* Insert a new cgraph_function_version_info node into cgraph_fnver_htab
      corresponding to cgraph_node.  */
@@ -1139,7 +1147,7 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
 
   /* Collect all callers of cgraph_node and its aliases that are known to lead
      to NODE (i.e. are not overwritable) and that are not thunks.  */
-  vec<cgraph_edge *> collect_callers (void);
+  auto_vec<cgraph_edge *> collect_callers (void);
 
   /* Remove all callers from the node.  */
   void remove_callers (void);
@@ -1158,6 +1166,10 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
   /* SET DECL_IS_MALLOC on cgraph_node's decl and on aliases of the node
      if any.  */
   bool set_malloc_flag (bool malloc_p);
+
+  /* SET TREE_THIS_VOLATILE on cgraph_node's decl and on aliases of the node
+     if any.  */
+  bool set_noreturn_flag (bool noreturn_p);
 
   /* If SET_CONST is true, mark function, aliases and thunks to be ECF_CONST.
     If SET_CONST if false, clear the flag.

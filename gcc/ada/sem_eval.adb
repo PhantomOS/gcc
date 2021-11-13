@@ -118,7 +118,8 @@ package body Sem_Eval is
    subtype CV_Range is Nat range 0 .. CV_Cache_Size;
 
    type CV_Entry is record
-      N : Node_Id;
+      N : Node_Id'Base;
+      --  We use 'Base here, in case we want to add a predicate to Node_Id
       V : Uint;
    end record;
 
@@ -140,7 +141,7 @@ package body Sem_Eval is
    Checking_For_Potentially_Static_Expression : Boolean := False;
    --  Global flag that is set True during Analyze_Static_Expression_Function
    --  in order to verify that the result expression of a static expression
-   --  function is a potentially static function (see RM202x 6.8(5.3)).
+   --  function is a potentially static function (see RM2022 6.8(5.3)).
 
    -----------------------
    -- Local Subprograms --
@@ -522,8 +523,8 @@ package body Sem_Eval is
               and then Nkind (Parent (N)) in N_Subexpr
             then
                Rewrite (N, New_Copy (N));
-               Set_Realval
-                 (N, Machine (Base_Type (T), Realval (N), Round_Even, N));
+               Set_Realval (N, Machine_Number (Base_Type (T), Realval (N), N));
+               Set_Is_Machine_Number (N);
             end if;
          end if;
 
@@ -574,18 +575,7 @@ package body Sem_Eval is
               (N, Corresponding_Integer_Value (N) * Small_Value (T));
 
          elsif not UR_Is_Zero (Realval (N)) then
-
-            --  Note: even though RM 4.9(38) specifies biased rounding, this
-            --  has been modified by AI-100 in order to prevent confusing
-            --  differences in rounding between static and non-static
-            --  expressions. AI-100 specifies that the effect of such rounding
-            --  is implementation dependent, and in GNAT we round to nearest
-            --  even to match the run-time behavior. Note that this applies
-            --  to floating point literals, not fixed points ones, even though
-            --  their compiler representation is also as a universal real.
-
-            Set_Realval
-              (N, Machine (Base_Type (T), Realval (N), Round_Even, N));
+            Set_Realval (N, Machine_Number (Base_Type (T), Realval (N), N));
             Set_Is_Machine_Number (N);
          end if;
 
@@ -2303,7 +2293,7 @@ package body Sem_Eval is
       then
          Eval_Intrinsic_Call (N, Entity (Name (N)));
 
-      --  Ada 202x (AI12-0075): If checking for potentially static expressions
+      --  Ada 2022 (AI12-0075): If checking for potentially static expressions
       --  is enabled and we have a call to a static function, substitute a
       --  static value for the call, to allow folding the expression. This
       --  supports checking the requirement of RM 6.8(5.3/5) in
@@ -2594,7 +2584,7 @@ package body Sem_Eval is
             return;
          end if;
 
-      --  Ada 202x (AI12-0075): If checking for potentially static expressions
+      --  Ada 2022 (AI12-0075): If checking for potentially static expressions
       --  is enabled and we have a reference to a formal parameter of mode in,
       --  substitute a static value for the reference, to allow folding the
       --  expression. This supports checking the requirement of RM 6.8(5.3/5)
@@ -2844,7 +2834,7 @@ package body Sem_Eval is
    --  the expander that do not correspond to static expressions.
 
    procedure Eval_Integer_Literal (N : Node_Id) is
-      function In_Any_Integer_Context (Context : Node_Id) return Boolean;
+      function In_Any_Integer_Context (K : Node_Kind) return Boolean;
       --  If the literal is resolved with a specific type in a context where
       --  the expected type is Any_Integer, there are no range checks on the
       --  literal. By the time the literal is evaluated, it carries the type
@@ -2855,23 +2845,21 @@ package body Sem_Eval is
       -- In_Any_Integer_Context --
       ----------------------------
 
-      function In_Any_Integer_Context (Context : Node_Id) return Boolean is
+      function In_Any_Integer_Context (K : Node_Kind) return Boolean is
       begin
          --  Any_Integer also appears in digits specifications for real types,
          --  but those have bounds smaller that those of any integer base type,
          --  so we can safely ignore these cases.
 
-         return
-           Nkind (Context) in N_Attribute_Definition_Clause
-                            | N_Attribute_Reference
-                            | N_Modular_Type_Definition
-                            | N_Number_Declaration
-                            | N_Signed_Integer_Type_Definition;
+         return K in N_Attribute_Definition_Clause
+                   | N_Modular_Type_Definition
+                   | N_Number_Declaration
+                   | N_Signed_Integer_Type_Definition;
       end In_Any_Integer_Context;
 
       --  Local variables
 
-      Par : constant Node_Id   := Parent (N);
+      PK  : constant Node_Kind := Nkind (Parent (N));
       Typ : constant Entity_Id := Etype (N);
 
    --  Start of processing for Eval_Integer_Literal
@@ -2889,12 +2877,11 @@ package body Sem_Eval is
       --  Check_Non_Static_Context on an expanded literal may lead to spurious
       --  and misleading warnings.
 
-      if (Nkind (Par) in N_Case_Expression_Alternative | N_If_Expression
-           or else Nkind (Par) not in N_Subexpr)
-        and then (Nkind (Par) not in N_Case_Expression_Alternative
-                                   | N_If_Expression
-                   or else Comes_From_Source (N))
-        and then not In_Any_Integer_Context (Par)
+      if (PK not in N_Subexpr
+           or else (PK in N_Case_Expression_Alternative | N_If_Expression
+                     and then
+                    Comes_From_Source (N)))
+        and then not In_Any_Integer_Context (PK)
       then
          Check_Non_Static_Context (N);
       end if;
@@ -2995,10 +2982,12 @@ package body Sem_Eval is
    --  static if both operands are potentially static (RM 4.9(7), 4.9(20)).
 
    procedure Eval_Logical_Op (N : Node_Id) is
-      Left  : constant Node_Id := Left_Opnd (N);
-      Right : constant Node_Id := Right_Opnd (N);
-      Stat  : Boolean;
-      Fold  : Boolean;
+      Left      : constant Node_Id := Left_Opnd (N);
+      Right     : constant Node_Id := Right_Opnd (N);
+      Left_Int  : Uint := No_Uint;
+      Right_Int : Uint := No_Uint;
+      Stat      : Boolean;
+      Fold      : Boolean;
 
    begin
       --  If not foldable we are done
@@ -3011,64 +3000,88 @@ package body Sem_Eval is
 
       --  Compile time evaluation of logical operation
 
-      declare
-         Left_Int  : constant Uint := Expr_Value (Left);
-         Right_Int : constant Uint := Expr_Value (Right);
+      if Is_Modular_Integer_Type (Etype (N)) then
+         Left_Int  := Expr_Value (Left);
+         Right_Int := Expr_Value (Right);
 
-      begin
-         if Is_Modular_Integer_Type (Etype (N)) then
-            declare
-               Left_Bits  : Bits (0 .. UI_To_Int (Esize (Etype (N))) - 1);
-               Right_Bits : Bits (0 .. UI_To_Int (Esize (Etype (N))) - 1);
+         declare
+            Left_Bits  : Bits (0 .. UI_To_Int (Esize (Etype (N))) - 1);
+            Right_Bits : Bits (0 .. UI_To_Int (Esize (Etype (N))) - 1);
 
-            begin
-               To_Bits (Left_Int, Left_Bits);
-               To_Bits (Right_Int, Right_Bits);
+         begin
+            To_Bits (Left_Int, Left_Bits);
+            To_Bits (Right_Int, Right_Bits);
 
-               --  Note: should really be able to use array ops instead of
-               --  these loops, but they break the build with a cryptic error
-               --  during the bind of gnat1 likely due to a wrong computation
-               --  of a date or checksum.
-
-               if Nkind (N) = N_Op_And then
-                  for J in Left_Bits'Range loop
-                     Left_Bits (J) := Left_Bits (J) and Right_Bits (J);
-                  end loop;
-
-               elsif Nkind (N) = N_Op_Or then
-                  for J in Left_Bits'Range loop
-                     Left_Bits (J) := Left_Bits (J) or Right_Bits (J);
-                  end loop;
-
-               else
-                  pragma Assert (Nkind (N) = N_Op_Xor);
-
-                  for J in Left_Bits'Range loop
-                     Left_Bits (J) := Left_Bits (J) xor Right_Bits (J);
-                  end loop;
-               end if;
-
-               Fold_Uint (N, From_Bits (Left_Bits, Etype (N)), Stat);
-            end;
-
-         else
-            pragma Assert (Is_Boolean_Type (Etype (N)));
+            --  Note: should really be able to use array ops instead of
+            --  these loops, but they break the build with a cryptic error
+            --  during the bind of gnat1 likely due to a wrong computation
+            --  of a date or checksum.
 
             if Nkind (N) = N_Op_And then
-               Fold_Uint (N,
-                 Test (Is_True (Left_Int) and then Is_True (Right_Int)), Stat);
+               for J in Left_Bits'Range loop
+                  Left_Bits (J) := Left_Bits (J) and Right_Bits (J);
+               end loop;
 
             elsif Nkind (N) = N_Op_Or then
-               Fold_Uint (N,
-                 Test (Is_True (Left_Int) or else Is_True (Right_Int)), Stat);
+               for J in Left_Bits'Range loop
+                  Left_Bits (J) := Left_Bits (J) or Right_Bits (J);
+               end loop;
 
             else
                pragma Assert (Nkind (N) = N_Op_Xor);
-               Fold_Uint (N,
-                 Test (Is_True (Left_Int) xor Is_True (Right_Int)), Stat);
+
+               for J in Left_Bits'Range loop
+                  Left_Bits (J) := Left_Bits (J) xor Right_Bits (J);
+               end loop;
             end if;
+
+            Fold_Uint (N, From_Bits (Left_Bits, Etype (N)), Stat);
+         end;
+
+      else
+         pragma Assert (Is_Boolean_Type (Etype (N)));
+
+         if Compile_Time_Known_Value (Left)
+           and then Compile_Time_Known_Value (Right)
+         then
+            Right_Int := Expr_Value (Right);
+            Left_Int  := Expr_Value (Left);
          end if;
-      end;
+
+         if Nkind (N) = N_Op_And then
+
+            --  If Left or Right are not compile time known values it means
+            --  that the result is always False as per
+            --  Test_Expression_Is_Foldable.
+            --  Note that in this case, both Right_Int and Left_Int are set
+            --  to No_Uint, so need to test for both.
+
+            if No (Right_Int) then
+               Fold_Uint (N, Uint_0, Stat);
+            else
+               Fold_Uint (N,
+                 Test (Is_True (Left_Int) and then Is_True (Right_Int)), Stat);
+            end if;
+         elsif Nkind (N) = N_Op_Or then
+
+            --  If Left or Right are not compile time known values it means
+            --  that the result is always True. as per
+            --  Test_Expression_Is_Foldable.
+            --  Note that in this case, both Right_Int and Left_Int are set
+            --  to No_Uint, so need to test for both.
+
+            if No (Right_Int) then
+               Fold_Uint (N, Uint_1, Stat);
+            else
+               Fold_Uint (N,
+                 Test (Is_True (Left_Int) or else Is_True (Right_Int)), Stat);
+            end if;
+         else
+            pragma Assert (Nkind (N) = N_Op_Xor);
+            Fold_Uint (N,
+              Test (Is_True (Left_Int) xor Is_True (Right_Int)), Stat);
+         end if;
+      end if;
    end Eval_Logical_Op;
 
    ------------------------
@@ -3436,7 +3449,7 @@ package body Sem_Eval is
    --  Relational operations are static functions, so the result is static if
    --  both operands are static (RM 4.9(7), 4.9(20)), except that up to Ada
    --  2012, for strings the result is never static, even if the operands are.
-   --  The string case was relaxed in Ada 2020, see AI12-0201.
+   --  The string case was relaxed in Ada 2022, see AI12-0201.
 
    --  However, for internally generated nodes, we allow string equality and
    --  inequality to be static. This is because we rewrite A in "ABC" as an
@@ -3777,12 +3790,12 @@ package body Sem_Eval is
            and then Right_Len /= Uint_Minus_1
            and then Left_Len /= Right_Len
          then
-            --  AI12-0201: comparison of string is static in Ada 202x
+            --  AI12-0201: comparison of string is static in Ada 2022
 
             Fold_Uint
               (N,
                Test (Nkind (N) = N_Op_Ne),
-               Static => Ada_Version >= Ada_2020
+               Static => Ada_Version >= Ada_2022
                            and then Is_String_Type (Left_Typ));
             Warn_On_Known_Condition (N);
             return;
@@ -3802,16 +3815,16 @@ package body Sem_Eval is
         (N, Left, Right, Is_Static_Expression, Fold);
 
       --  Comparisons of scalars can give static results.
-      --  In addition starting with Ada 202x (AI12-0201), comparison of strings
+      --  In addition starting with Ada 2022 (AI12-0201), comparison of strings
       --  can also give static results, and as noted above, we also allow for
       --  earlier Ada versions internally generated equality and inequality for
       --  strings.
-      --  ??? The Comes_From_Source test below isn't correct and will accept
-      --  some cases that are illegal in Ada 2012. and before. Now that Ada
-      --  202x has relaxed the rules, this doesn't really matter.
+      --  The Comes_From_Source test below isn't correct and will accept
+      --  some cases that are illegal in Ada 2012 and before. Now that Ada
+      --  2022 has relaxed the rules, this doesn't really matter.
 
       if Is_String_Type (Left_Typ) then
-         if Ada_Version < Ada_2020
+         if Ada_Version < Ada_2022
            and then (Comes_From_Source (N)
                       or else Nkind (N) not in N_Op_Eq | N_Op_Ne)
          then
@@ -4107,7 +4120,7 @@ package body Sem_Eval is
       end if;
 
       --  If original node was a type conversion, then result if non-static
-      --  up to Ada 2012. AI12-0201 changes that with Ada 202x.
+      --  up to Ada 2012. AI12-0201 changes that with Ada 2022.
 
       if Nkind (Original_Node (N)) = N_Type_Conversion
         and then Ada_Version <= Ada_2012
@@ -4269,13 +4282,13 @@ package body Sem_Eval is
       --  Conversion_OK is set, in which case it counts as integer.
 
       --  Fold conversion, case of string type. The result is static starting
-      --  with Ada 202x (AI12-0201).
+      --  with Ada 2022 (AI12-0201).
 
       if Is_String_Type (Target_Type) then
          Fold_Str
            (N,
             Strval (Get_String_Val (Operand)),
-            Static => Ada_Version >= Ada_2020);
+            Static => Ada_Version >= Ada_2022);
          return;
 
       --  Fold conversion, case of integer target type
@@ -4339,7 +4352,25 @@ package body Sem_Eval is
          Fold_Uint (N, Expr_Value (Operand), Stat);
       end if;
 
-      if Is_Out_Of_Range (N, Etype (N), Assume_Valid => True) then
+      --  If the target is a static floating-point subtype, then its bounds
+      --  are machine numbers so we must consider the machine-rounded value.
+
+      if Is_Floating_Point_Type (Target_Type)
+        and then Nkind (N) = N_Real_Literal
+        and then not Is_Machine_Number (N)
+      then
+         declare
+            Lo   : constant Node_Id := Type_Low_Bound (Target_Type);
+            Hi   : constant Node_Id := Type_High_Bound (Target_Type);
+            Valr : constant Ureal   :=
+                     Machine_Number (Target_Type, Expr_Value_R (N), N);
+         begin
+            if Valr < Expr_Value_R (Lo) or else Valr > Expr_Value_R (Hi) then
+               Out_Of_Range (N);
+            end if;
+         end;
+
+      elsif Is_Out_Of_Range (N, Etype (N), Assume_Valid => True) then
          Out_Of_Range (N);
       end if;
    end Eval_Type_Conversion;
@@ -5037,12 +5068,20 @@ package body Sem_Eval is
                --  result is always positive, even if the original operand was
                --  negative.
 
-               Fold_Uint
-                 (N,
-                  (Expr_Value (Left) +
-                     (if Expr_Value (Left) >= Uint_0 then Uint_0 else Modulus))
-                  / (Uint_2 ** Expr_Value (Right)),
-                  Static => Static);
+               declare
+                  M : Unat;
+               begin
+                  if Expr_Value (Left) >= Uint_0 then
+                     M := Uint_0;
+                  else
+                     M := Modulus;
+                  end if;
+
+                  Fold_Uint
+                    (N,
+                     (Expr_Value (Left) + M) / (Uint_2 ** Expr_Value (Right)),
+                     Static => Static);
+               end;
             end if;
          elsif Op = N_Op_Shift_Right_Arithmetic then
             Check_Elab_Call;
@@ -5715,6 +5754,8 @@ package body Sem_Eval is
       elsif Has_Dynamic_Predicate_Aspect (Typ)
         or else (Is_Derived_Type (Typ)
                   and then Has_Aspect (Typ, Aspect_Dynamic_Predicate))
+        or else (Has_Aspect (Typ, Aspect_Predicate)
+                  and then not Has_Static_Predicate (Typ))
       then
          return False;
 
@@ -6012,6 +6053,27 @@ package body Sem_Eval is
    end Is_Statically_Unevaluated;
 
    --------------------
+   -- Machine_Number --
+   --------------------
+
+   --  Historical note: RM 4.9(38) originally specified biased rounding but
+   --  this has been modified by AI-268 to prevent confusing differences in
+   --  rounding between static and nonstatic expressions. This AI specifies
+   --  that the effect of such rounding is implementation-dependent instead,
+   --  and in GNAT we round to nearest even to match the run-time behavior.
+   --  Note that this applies to floating-point literals, not fixed-point
+   --  ones, even though their representation is also a universal real.
+
+   function Machine_Number
+     (Typ : Entity_Id;
+      Val : Ureal;
+      N   : Node_Id) return Ureal
+   is
+   begin
+      return Machine (Typ, Val, Round_Even, N);
+   end Machine_Number;
+
+   --------------------
    -- Not_Null_Range --
    --------------------
 
@@ -6197,7 +6259,7 @@ package body Sem_Eval is
             end;
 
          else
-            --  TBD: Implement Interval_Lists for real types
+            --  ??? Need to implement Interval_Lists for real types
 
             return False;
          end if;
@@ -6455,11 +6517,10 @@ package body Sem_Eval is
 
    procedure Set_Checking_Potentially_Static_Expression (Value : Boolean) is
    begin
-      --  Verify that we're not currently checking for a potentially static
-      --  expression unless we're disabling such checking.
+      --  Verify that we only start/stop checking for a potentially static
+      --  expression and do not start or stop it twice in a row.
 
-      pragma Assert
-        (not Checking_For_Potentially_Static_Expression or else not Value);
+      pragma Assert (Checking_For_Potentially_Static_Expression /= Value);
 
       Checking_For_Potentially_Static_Expression := Value;
    end Set_Checking_Potentially_Static_Expression;
@@ -6597,7 +6658,7 @@ package body Sem_Eval is
    --  match if they are set (unless checking an actual for a formal derived
    --  type). The use of 'Object_Size can cause this to be false even if the
    --  types would otherwise match in the Ada 95 RM sense, but this deviation
-   --  is adopted by AI12-059 which introduces Object_Size in Ada 2020.
+   --  is adopted by AI12-059 which introduces Object_Size in Ada 2022.
 
    function Subtypes_Statically_Match
      (T1                      : Entity_Id;
@@ -7193,6 +7254,38 @@ package body Sem_Eval is
                       and then Compile_Time_Known_Value (Op2);
          end if;
 
+         if not Fold
+           and then not Is_Modular_Integer_Type (Etype (N))
+         then
+            case Nkind (N) is
+               when N_Op_And =>
+
+                  --  (False and XXX) = (XXX and False) = False
+
+                  Fold :=
+                    (Compile_Time_Known_Value (Op1)
+                       and then Is_False (Expr_Value (Op1))
+                       and then Side_Effect_Free (Op2))
+                      or else (Compile_Time_Known_Value (Op2)
+                                and then Is_False (Expr_Value (Op2))
+                                and then Side_Effect_Free (Op1));
+
+               when N_Op_Or =>
+
+                  --  (True and XXX) = (XXX and True) = True
+
+                  Fold :=
+                    (Compile_Time_Known_Value (Op1)
+                       and then Is_True (Expr_Value (Op1))
+                       and then Side_Effect_Free (Op2))
+                      or else (Compile_Time_Known_Value (Op2)
+                                and then Is_True (Expr_Value (Op2))
+                                and then Side_Effect_Free (Op1));
+
+               when others => null;
+            end case;
+         end if;
+
          return;
 
       --  Else result is static and foldable. Both operands are static, and
@@ -7267,19 +7360,12 @@ package body Sem_Eval is
 
       elsif Compile_Time_Known_Value (N) then
          declare
-            Lo       : Node_Id;
-            Hi       : Node_Id;
-
-            LB_Known : Boolean;
-            HB_Known : Boolean;
+            Lo       : constant Node_Id := Type_Low_Bound (Typ);
+            Hi       : constant Node_Id := Type_High_Bound (Typ);
+            LB_Known : constant Boolean := Compile_Time_Known_Value (Lo);
+            HB_Known : constant Boolean := Compile_Time_Known_Value (Hi);
 
          begin
-            Lo := Type_Low_Bound  (Typ);
-            Hi := Type_High_Bound (Typ);
-
-            LB_Known := Compile_Time_Known_Value (Lo);
-            HB_Known := Compile_Time_Known_Value (Hi);
-
             --  Fixed point types should be considered as such only if flag
             --  Fixed_Int is set to False.
 

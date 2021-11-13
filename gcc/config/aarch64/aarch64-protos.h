@@ -259,12 +259,16 @@ struct sve_vec_cost : simd_vec_cost
 			  unsigned int fadda_f16_cost,
 			  unsigned int fadda_f32_cost,
 			  unsigned int fadda_f64_cost,
+			  unsigned int gather_load_x32_cost,
+			  unsigned int gather_load_x64_cost,
 			  unsigned int scatter_store_elt_cost)
     : simd_vec_cost (base),
       clast_cost (clast_cost),
       fadda_f16_cost (fadda_f16_cost),
       fadda_f32_cost (fadda_f32_cost),
       fadda_f64_cost (fadda_f64_cost),
+      gather_load_x32_cost (gather_load_x32_cost),
+      gather_load_x64_cost (gather_load_x64_cost),
       scatter_store_elt_cost (scatter_store_elt_cost)
   {}
 
@@ -278,6 +282,11 @@ struct sve_vec_cost : simd_vec_cost
   const int fadda_f16_cost;
   const int fadda_f32_cost;
   const int fadda_f64_cost;
+
+  /* The cost of a gather load instruction.  The x32 value is for loads
+     of 32-bit elements and the x64 value is for loads of 64-bit elements.  */
+  const int gather_load_x32_cost;
+  const int gather_load_x64_cost;
 
   /* The per-element cost of a scatter store.  */
   const int scatter_store_elt_cost;
@@ -506,10 +515,10 @@ struct tune_params
   const struct cpu_vector_cost *vec_costs;
   const struct cpu_branch_cost *branch_costs;
   const struct cpu_approx_modes *approx_modes;
-  /* Width of the SVE registers or SVE_NOT_IMPLEMENTED if not applicable.
-     Only used for tuning decisions, does not disable VLA
-     vectorization.  */
-  enum aarch64_sve_vector_bits_enum sve_width;
+  /* A bitmask of the possible SVE register widths in bits,
+     or SVE_NOT_IMPLEMENTED if not applicable.  Only used for tuning
+     decisions, does not disable VLA vectorization.  */
+  unsigned int sve_width;
   int memmov_cost;
   int issue_rate;
   unsigned int fusible_ops;
@@ -734,6 +743,7 @@ unsigned HOST_WIDE_INT aarch64_and_split_imm2 (HOST_WIDE_INT val_in);
 bool aarch64_and_bitmask_imm (unsigned HOST_WIDE_INT val_in, machine_mode mode);
 int aarch64_branch_cost (bool, bool);
 enum aarch64_symbol_type aarch64_classify_symbolic_expression (rtx);
+bool aarch64_advsimd_struct_mode_p (machine_mode mode);
 opt_machine_mode aarch64_vq_mode (scalar_mode);
 opt_machine_mode aarch64_full_sve_mode (scalar_mode);
 bool aarch64_can_const_movi_rtx_p (rtx x, machine_mode mode);
@@ -953,11 +963,13 @@ void aarch64_override_options_internal (struct gcc_options *);
 const char *aarch64_general_mangle_builtin_type (const_tree);
 void aarch64_general_init_builtins (void);
 tree aarch64_general_fold_builtin (unsigned int, tree, unsigned int, tree *);
-gimple *aarch64_general_gimple_fold_builtin (unsigned int, gcall *);
+gimple *aarch64_general_gimple_fold_builtin (unsigned int, gcall *,
+					     gimple_stmt_iterator *);
 rtx aarch64_general_expand_builtin (unsigned int, tree, rtx, int);
 tree aarch64_general_builtin_decl (unsigned, bool);
 tree aarch64_general_builtin_rsqrt (unsigned int);
 tree aarch64_builtin_vectorized_function (unsigned int, tree, tree);
+void handle_arm_neon_h (void);
 
 namespace aarch64_sve {
   void init_builtins ();

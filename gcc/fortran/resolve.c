@@ -804,6 +804,15 @@ resolve_entries (gfc_namespace *ns)
 	     the same string length, i.e. both len=*, or both len=4.
 	     Having both len=<variable> is also possible, but difficult to
 	     check at compile time.  */
+	  else if (ts->type == BT_CHARACTER
+		   && (el->sym->result->attr.allocatable
+		       != ns->entries->sym->result->attr.allocatable))
+	    {
+	      gfc_error ("Function %s at %L has entry %s with mismatched "
+			 "characteristics", ns->entries->sym->name,
+			 &ns->entries->sym->declared_at, el->sym->name);
+	      goto cleanup;
+	    }
 	  else if (ts->type == BT_CHARACTER && ts->u.cl && fts->u.cl
 		   && (((ts->u.cl->length && !fts->u.cl->length)
 			||(!ts->u.cl->length && fts->u.cl->length))
@@ -908,6 +917,8 @@ resolve_entries (gfc_namespace *ns)
 	    }
 	}
     }
+
+cleanup:
   proc->attr.access = ACCESS_PRIVATE;
   proc->attr.entry_master = 1;
 
@@ -970,7 +981,7 @@ resolve_common_vars (gfc_common_head *common_block, bool named_common)
 	}
 
       if (UNLIMITED_POLY (csym))
-	gfc_error_now ("%qs in cannot appear in COMMON at %L "
+	gfc_error_now ("%qs at %L cannot appear in COMMON "
 		       "[F2008:C5100]", csym->name, &csym->declared_at);
 
       if (csym->ts.type != BT_DERIVED)
@@ -1441,6 +1452,41 @@ resolve_structure_cons (gfc_expr *expr, int init)
 			     " %s", comp->name, &cons->expr->where, err);
 	      return false;
 	    }
+	}
+
+      /* Validate shape, except for dynamic or PDT arrays.  */
+      if (cons->expr->expr_type == EXPR_ARRAY && rank == cons->expr->rank
+	  && comp->as && !comp->attr.allocatable && !comp->attr.pointer
+	  && !comp->attr.pdt_array)
+	{
+	  mpz_t len;
+	  mpz_init (len);
+	  for (int n = 0; n < rank; n++)
+	    {
+	      if (comp->as->upper[n]->expr_type != EXPR_CONSTANT
+		  || comp->as->lower[n]->expr_type != EXPR_CONSTANT)
+		{
+		  gfc_error ("Bad array spec of component %qs referenced in "
+			     "structure constructor at %L",
+			     comp->name, &cons->expr->where);
+		  t = false;
+		  break;
+		};
+	      mpz_set_ui (len, 1);
+	      mpz_add (len, len, comp->as->upper[n]->value.integer);
+	      mpz_sub (len, len, comp->as->lower[n]->value.integer);
+	      if (mpz_cmp (cons->expr->shape[n], len) != 0)
+		{
+		  gfc_error ("The shape of component %qs in the structure "
+			     "constructor at %L differs from the shape of the "
+			     "declared component for dimension %d (%ld/%ld)",
+			     comp->name, &cons->expr->where, n+1,
+			     mpz_get_si (cons->expr->shape[n]),
+			     mpz_get_si (len));
+		  t = false;
+		}
+	    }
+	  mpz_clear (len);
 	}
 
       if (!comp->attr.pointer || comp->attr.proc_pointer
@@ -2928,6 +2974,19 @@ resolve_unknown_f (gfc_expr *expr)
       return false;
     }
 
+  /* IMPLICIT NONE (external) procedures require an explicit EXTERNAL attr.  */
+  /* Intrinsics were handled above, only non-intrinsics left here.  */
+  if (sym->attr.flavor == FL_PROCEDURE
+      && sym->attr.implicit_type
+      && sym->ns
+      && sym->ns->has_implicit_none_export)
+    {
+	  gfc_error ("Missing explicit declaration with EXTERNAL attribute "
+	      "for symbol %qs at %L", sym->name, &sym->declared_at);
+	  sym->error = 1;
+	  return false;
+    }
+
   /* The reference is to an external name.  */
 
   sym->attr.proc = PROC_EXTERNAL;
@@ -4005,7 +4064,7 @@ resolve_operator (gfc_expr *e)
     {
     default:
       if (!gfc_resolve_expr (e->value.op.op2))
-	return false;
+	t = false;
 
     /* Fall through.  */
 
@@ -4031,6 +4090,9 @@ resolve_operator (gfc_expr *e)
   op1 = e->value.op.op1;
   op2 = e->value.op.op2;
   if (op1 == NULL && op2 == NULL)
+    return false;
+  /* Error out if op2 did not resolve. We already diagnosed op1.  */
+  if (t == false)
     return false;
 
   dual_locus_error = false;
@@ -5709,7 +5771,6 @@ resolve_variable (gfc_expr *e)
 	     part_ref.  */
 	  gfc_ref *ref = gfc_get_ref ();
 	  ref->type = REF_ARRAY;
-	  ref->u.ar = *gfc_get_array_ref();
 	  ref->u.ar.type = AR_FULL;
 	  if (sym->as)
 	    {
@@ -7821,8 +7882,9 @@ resolve_allocate_expr (gfc_expr *e, gfc_code *code, bool *array_alloc_wo_spec)
 	}
     }
 
-  /* Check for F08:C628.  */
-  if (allocatable == 0 && pointer == 0 && !unlimited)
+  /* Check for F08:C628 (F2018:C932).  Each allocate-object shall be a data
+     pointer or an allocatable variable.  */
+  if (allocatable == 0 && pointer == 0)
     {
       gfc_error ("Allocate-object at %L must be ALLOCATABLE or a POINTER",
 		 &e->where);
@@ -8156,16 +8218,21 @@ resolve_allocate_deallocate (gfc_code *code, const char *fcn)
   /* Check the stat variable.  */
   if (stat)
     {
-      gfc_check_vardef_context (stat, false, false, false,
-				_("STAT variable"));
+      if (!gfc_check_vardef_context (stat, false, false, false,
+				     _("STAT variable")))
+	  goto done_stat;
 
-      if ((stat->ts.type != BT_INTEGER
-	   && !(stat->ref && (stat->ref->type == REF_ARRAY
-			      || stat->ref->type == REF_COMPONENT)))
+      if (stat->ts.type != BT_INTEGER
 	  || stat->rank > 0)
 	gfc_error ("Stat-variable at %L must be a scalar INTEGER "
 		   "variable", &stat->where);
 
+      if (stat->expr_type == EXPR_CONSTANT || stat->symtree == NULL)
+	goto done_stat;
+
+      /* F2018:9.7.4: The stat-variable shall not be allocated or deallocated
+       * within the ALLOCATE or DEALLOCATE statement in which it appears ...
+       */
       for (p = code->ext.alloc.list; p; p = p->next)
 	if (p->expr->symtree->n.sym->name == stat->symtree->n.sym->name)
 	  {
@@ -8193,6 +8260,8 @@ resolve_allocate_deallocate (gfc_code *code, const char *fcn)
 	  }
     }
 
+done_stat:
+
   /* Check the errmsg variable.  */
   if (errmsg)
     {
@@ -8200,22 +8269,26 @@ resolve_allocate_deallocate (gfc_code *code, const char *fcn)
 	gfc_warning (0, "ERRMSG at %L is useless without a STAT tag",
 		     &errmsg->where);
 
-      gfc_check_vardef_context (errmsg, false, false, false,
-				_("ERRMSG variable"));
+      if (!gfc_check_vardef_context (errmsg, false, false, false,
+				     _("ERRMSG variable")))
+	  goto done_errmsg;
 
       /* F18:R928  alloc-opt             is ERRMSG = errmsg-variable
 	 F18:R930  errmsg-variable       is scalar-default-char-variable
 	 F18:R906  default-char-variable is variable
 	 F18:C906  default-char-variable shall be default character.  */
-      if ((errmsg->ts.type != BT_CHARACTER
-	   && !(errmsg->ref
-		&& (errmsg->ref->type == REF_ARRAY
-		    || errmsg->ref->type == REF_COMPONENT)))
+      if (errmsg->ts.type != BT_CHARACTER
 	  || errmsg->rank > 0
 	  || errmsg->ts.kind != gfc_default_character_kind)
 	gfc_error ("ERRMSG variable at %L shall be a scalar default CHARACTER "
 		   "variable", &errmsg->where);
 
+      if (errmsg->expr_type == EXPR_CONSTANT || errmsg->symtree == NULL)
+	goto done_errmsg;
+
+      /* F2018:9.7.5: The errmsg-variable shall not be allocated or deallocated
+       * within the ALLOCATE or DEALLOCATE statement in which it appears ...
+       */
       for (p = code->ext.alloc.list; p; p = p->next)
 	if (p->expr->symtree->n.sym->name == errmsg->symtree->n.sym->name)
 	  {
@@ -8242,6 +8315,8 @@ resolve_allocate_deallocate (gfc_code *code, const char *fcn)
 	      }
 	  }
     }
+
+done_errmsg:
 
   /* Check that an allocate-object appears only once in the statement.  */
 
@@ -8711,11 +8786,11 @@ resolve_select (gfc_code *code, bool select_type)
 
 	      if (cp->low != NULL
 		  && case_expr->ts.kind != gfc_kind_max(case_expr, cp->low))
-		gfc_convert_type_warn (case_expr, &cp->low->ts, 2, 0);
+		gfc_convert_type_warn (case_expr, &cp->low->ts, 1, 0);
 
 	      if (cp->high != NULL
 		  && case_expr->ts.kind != gfc_kind_max(case_expr, cp->high))
-		gfc_convert_type_warn (case_expr, &cp->high->ts, 2, 0);
+		gfc_convert_type_warn (case_expr, &cp->high->ts, 1, 0);
 	    }
 	 }
     }
@@ -10224,19 +10299,27 @@ resolve_sync (gfc_code *code)
 
   /* Check STAT.  */
   gfc_resolve_expr (code->expr2);
-  if (code->expr2
-      && (code->expr2->ts.type != BT_INTEGER || code->expr2->rank != 0
-	  || code->expr2->expr_type != EXPR_VARIABLE))
-    gfc_error ("STAT= argument at %L must be a scalar INTEGER variable",
-	       &code->expr2->where);
+  if (code->expr2)
+    {
+      if (code->expr2->ts.type != BT_INTEGER || code->expr2->rank != 0)
+	gfc_error ("STAT= argument at %L must be a scalar INTEGER variable",
+		   &code->expr2->where);
+      else
+	gfc_check_vardef_context (code->expr2, false, false, false,
+				  _("STAT variable"));
+    }
 
   /* Check ERRMSG.  */
   gfc_resolve_expr (code->expr3);
-  if (code->expr3
-      && (code->expr3->ts.type != BT_CHARACTER || code->expr3->rank != 0
-	  || code->expr3->expr_type != EXPR_VARIABLE))
-    gfc_error ("ERRMSG= argument at %L must be a scalar CHARACTER variable",
-	       &code->expr3->where);
+  if (code->expr3)
+    {
+      if (code->expr3->ts.type != BT_CHARACTER || code->expr3->rank != 0)
+	gfc_error ("ERRMSG= argument at %L must be a scalar CHARACTER variable",
+		   &code->expr3->where);
+      else
+	gfc_check_vardef_context (code->expr3, false, false, false,
+				  _("ERRMSG variable"));
+    }
 }
 
 
@@ -10797,16 +10880,30 @@ gfc_resolve_blocks (gfc_code *b, gfc_namespace *ns)
 	case EXEC_OMP_DISTRIBUTE_SIMD:
 	case EXEC_OMP_DO:
 	case EXEC_OMP_DO_SIMD:
+	case EXEC_OMP_ERROR:
+	case EXEC_OMP_LOOP:
+	case EXEC_OMP_MASKED:
+	case EXEC_OMP_MASKED_TASKLOOP:
+	case EXEC_OMP_MASKED_TASKLOOP_SIMD:
 	case EXEC_OMP_MASTER:
+	case EXEC_OMP_MASTER_TASKLOOP:
+	case EXEC_OMP_MASTER_TASKLOOP_SIMD:
 	case EXEC_OMP_ORDERED:
 	case EXEC_OMP_PARALLEL:
 	case EXEC_OMP_PARALLEL_DO:
 	case EXEC_OMP_PARALLEL_DO_SIMD:
+	case EXEC_OMP_PARALLEL_LOOP:
+	case EXEC_OMP_PARALLEL_MASKED:
+	case EXEC_OMP_PARALLEL_MASKED_TASKLOOP:
+	case EXEC_OMP_PARALLEL_MASKED_TASKLOOP_SIMD:
 	case EXEC_OMP_PARALLEL_MASTER:
+	case EXEC_OMP_PARALLEL_MASTER_TASKLOOP:
+	case EXEC_OMP_PARALLEL_MASTER_TASKLOOP_SIMD:
 	case EXEC_OMP_PARALLEL_SECTIONS:
 	case EXEC_OMP_PARALLEL_WORKSHARE:
 	case EXEC_OMP_SECTIONS:
 	case EXEC_OMP_SIMD:
+	case EXEC_OMP_SCOPE:
 	case EXEC_OMP_SINGLE:
 	case EXEC_OMP_TARGET:
 	case EXEC_OMP_TARGET_DATA:
@@ -10815,12 +10912,14 @@ gfc_resolve_blocks (gfc_code *b, gfc_namespace *ns)
 	case EXEC_OMP_TARGET_PARALLEL:
 	case EXEC_OMP_TARGET_PARALLEL_DO:
 	case EXEC_OMP_TARGET_PARALLEL_DO_SIMD:
+	case EXEC_OMP_TARGET_PARALLEL_LOOP:
 	case EXEC_OMP_TARGET_SIMD:
 	case EXEC_OMP_TARGET_TEAMS:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_PARALLEL_DO:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_PARALLEL_DO_SIMD:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_SIMD:
+	case EXEC_OMP_TARGET_TEAMS_LOOP:
 	case EXEC_OMP_TARGET_UPDATE:
 	case EXEC_OMP_TASK:
 	case EXEC_OMP_TASKGROUP:
@@ -10832,6 +10931,7 @@ gfc_resolve_blocks (gfc_code *b, gfc_namespace *ns)
 	case EXEC_OMP_TEAMS_DISTRIBUTE:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_PARALLEL_DO:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_PARALLEL_DO_SIMD:
+	case EXEC_OMP_TEAMS_LOOP:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_SIMD:
 	case EXEC_OMP_WORKSHARE:
 	  break;
@@ -11764,7 +11864,12 @@ gfc_resolve_code (gfc_code *code, gfc_namespace *ns)
 	    case EXEC_OMP_PARALLEL:
 	    case EXEC_OMP_PARALLEL_DO:
 	    case EXEC_OMP_PARALLEL_DO_SIMD:
+	    case EXEC_OMP_PARALLEL_MASKED:
+	    case EXEC_OMP_PARALLEL_MASKED_TASKLOOP:
+	    case EXEC_OMP_PARALLEL_MASKED_TASKLOOP_SIMD:
 	    case EXEC_OMP_PARALLEL_MASTER:
+	    case EXEC_OMP_PARALLEL_MASTER_TASKLOOP:
+	    case EXEC_OMP_PARALLEL_MASTER_TASKLOOP_SIMD:
 	    case EXEC_OMP_PARALLEL_SECTIONS:
 	    case EXEC_OMP_TARGET_PARALLEL:
 	    case EXEC_OMP_TARGET_PARALLEL_DO:
@@ -12213,9 +12318,17 @@ start:
 	case EXEC_OMP_DISTRIBUTE_SIMD:
 	case EXEC_OMP_DO:
 	case EXEC_OMP_DO_SIMD:
+	case EXEC_OMP_ERROR:
+	case EXEC_OMP_LOOP:
 	case EXEC_OMP_MASTER:
+	case EXEC_OMP_MASTER_TASKLOOP:
+	case EXEC_OMP_MASTER_TASKLOOP_SIMD:
+	case EXEC_OMP_MASKED:
+	case EXEC_OMP_MASKED_TASKLOOP:
+	case EXEC_OMP_MASKED_TASKLOOP_SIMD:
 	case EXEC_OMP_ORDERED:
 	case EXEC_OMP_SCAN:
+	case EXEC_OMP_SCOPE:
 	case EXEC_OMP_SECTIONS:
 	case EXEC_OMP_SIMD:
 	case EXEC_OMP_SINGLE:
@@ -12226,12 +12339,14 @@ start:
 	case EXEC_OMP_TARGET_PARALLEL:
 	case EXEC_OMP_TARGET_PARALLEL_DO:
 	case EXEC_OMP_TARGET_PARALLEL_DO_SIMD:
+	case EXEC_OMP_TARGET_PARALLEL_LOOP:
 	case EXEC_OMP_TARGET_SIMD:
 	case EXEC_OMP_TARGET_TEAMS:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_PARALLEL_DO:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_PARALLEL_DO_SIMD:
 	case EXEC_OMP_TARGET_TEAMS_DISTRIBUTE_SIMD:
+	case EXEC_OMP_TARGET_TEAMS_LOOP:
 	case EXEC_OMP_TARGET_UPDATE:
 	case EXEC_OMP_TASK:
 	case EXEC_OMP_TASKGROUP:
@@ -12244,6 +12359,7 @@ start:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_PARALLEL_DO:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_PARALLEL_DO_SIMD:
 	case EXEC_OMP_TEAMS_DISTRIBUTE_SIMD:
+	case EXEC_OMP_TEAMS_LOOP:
 	case EXEC_OMP_WORKSHARE:
 	  gfc_resolve_omp_directive (code, ns);
 	  break;
@@ -12251,7 +12367,13 @@ start:
 	case EXEC_OMP_PARALLEL:
 	case EXEC_OMP_PARALLEL_DO:
 	case EXEC_OMP_PARALLEL_DO_SIMD:
+	case EXEC_OMP_PARALLEL_LOOP:
+	case EXEC_OMP_PARALLEL_MASKED:
+	case EXEC_OMP_PARALLEL_MASKED_TASKLOOP:
+	case EXEC_OMP_PARALLEL_MASKED_TASKLOOP_SIMD:
 	case EXEC_OMP_PARALLEL_MASTER:
+	case EXEC_OMP_PARALLEL_MASTER_TASKLOOP:
+	case EXEC_OMP_PARALLEL_MASTER_TASKLOOP_SIMD:
 	case EXEC_OMP_PARALLEL_SECTIONS:
 	case EXEC_OMP_PARALLEL_WORKSHARE:
 	  omp_workshare_save = omp_workshare_flag;
@@ -12280,7 +12402,7 @@ resolve_values (gfc_symbol *sym)
   if (sym->value == NULL)
     return;
 
-  if (sym->attr.ext_attr & (1 << EXT_ATTR_DEPRECATED))
+  if (sym->attr.ext_attr & (1 << EXT_ATTR_DEPRECATED) && sym->attr.referenced)
     gfc_warning (OPT_Wdeprecated_declarations,
 		 "Using parameter %qs declared at %L is deprecated",
 		 sym->name, &sym->declared_at);
@@ -12605,7 +12727,8 @@ can_generate_init (gfc_symbol *sym)
     || a->cray_pointer
     || sym->assoc
     || (!a->referenced && !a->result)
-    || (a->dummy && a->intent != INTENT_OUT)
+    || (a->dummy && (a->intent != INTENT_OUT
+		     || sym->ns->proc_name->attr.if_source == IFSRC_IFBODY))
     || (a->function && sym != sym->result)
   );
 }
@@ -12842,7 +12965,9 @@ resolve_fl_variable_derived (gfc_symbol *sym, int no_init_flag)
 
   /* Assign default initializer.  */
   if (!(sym->value || sym->attr.pointer || sym->attr.allocatable)
-      && (!no_init_flag || sym->attr.intent == INTENT_OUT))
+      && (!no_init_flag
+	  || (sym->attr.intent == INTENT_OUT
+	      && sym->ns->proc_name->attr.if_source != IFSRC_IFBODY)))
     sym->value = gfc_generate_initializer (&sym->ts, can_generate_init (sym));
 
   return true;
@@ -13070,7 +13195,7 @@ static bool
 resolve_fl_procedure (gfc_symbol *sym, int mp_flag)
 {
   gfc_formal_arglist *arg;
-  bool allocatable_or_pointer;
+  bool allocatable_or_pointer = false;
 
   if (sym->attr.function
       && !resolve_fl_var_and_proc (sym, mp_flag))
@@ -16083,7 +16208,8 @@ resolve_symbol (gfc_symbol *sym)
 		    || sym->ts.u.derived->attr.alloc_comp
 		    || sym->ts.u.derived->attr.pointer_comp))
 	   && !(a->function && sym != sym->result))
-	  || (a->dummy && a->intent == INTENT_OUT && !a->pointer))
+	  || (a->dummy && !a->pointer && a->intent == INTENT_OUT
+	      && sym->ns->proc_name->attr.if_source != IFSRC_IFBODY))
 	apply_default_init (sym);
       else if (a->function && sym->result && a->access != ACCESS_PRIVATE
 	       && (sym->ts.u.derived->attr.alloc_comp
@@ -16095,6 +16221,7 @@ resolve_symbol (gfc_symbol *sym)
 
   if (sym->ts.type == BT_CLASS && sym->ns == gfc_current_ns
       && sym->attr.dummy && sym->attr.intent == INTENT_OUT
+      && sym->ns->proc_name->attr.if_source != IFSRC_IFBODY
       && !CLASS_DATA (sym)->attr.class_pointer
       && !CLASS_DATA (sym)->attr.allocatable)
     apply_default_init (sym);

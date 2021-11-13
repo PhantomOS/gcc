@@ -32,7 +32,7 @@
 #include <debug/safe_sequence.h>
 #include <debug/safe_container.h>
 #include <debug/safe_iterator.h>
-#include <utility>
+#include <bits/stl_pair.h>
 
 namespace std _GLIBCXX_VISIBILITY(default)
 {
@@ -113,10 +113,10 @@ namespace __debug
       set(const allocator_type& __a)
       : _Base(__a) { }
 
-      set(const set& __x, const allocator_type& __a)
+      set(const set& __x, const __type_identity_t<allocator_type>& __a)
       : _Base(__x, __a) { }
 
-      set(set&& __x, const allocator_type& __a)
+      set(set&& __x, const __type_identity_t<allocator_type>& __a)
       noexcept( noexcept(_Base(std::move(__x._M_base()), __a)) )
       : _Safe(std::move(__x._M_safe()), __a),
 	_Base(std::move(__x._M_base()), __a) { }
@@ -150,15 +150,7 @@ namespace __debug
       set(_Base_ref __x)
       : _Base(__x._M_ref) { }
 
-#if __cplusplus < 201103L
-      set&
-      operator=(const set& __x)
-      {
-	this->_M_safe() = __x;
-	_M_base() = __x;
-	return *this;
-      }
-#else
+#if __cplusplus >= 201103L
       set&
       operator=(const set&) = default;
 

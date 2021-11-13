@@ -3257,7 +3257,7 @@ rs6000_emit_prologue (void)
   if (!WORLD_SAVE_P (info) && info->lr_save_p
       && !cfun->machine->lr_is_wrapped_separately)
     {
-      rtx addr, reg, mem;
+      rtx reg;
 
       reg = gen_rtx_REG (Pmode, 0);
       START_USE (0);
@@ -3267,13 +3267,8 @@ rs6000_emit_prologue (void)
       if (!(strategy & (SAVE_NOINLINE_GPRS_SAVES_LR
 			| SAVE_NOINLINE_FPRS_SAVES_LR)))
 	{
-	  addr = gen_rtx_PLUS (Pmode, frame_reg_rtx,
-			       GEN_INT (info->lr_save_offset + frame_off));
-	  mem = gen_rtx_MEM (Pmode, addr);
-	  /* This should not be of rs6000_sr_alias_set, because of
-	     __builtin_return_address.  */
-
-	  insn = emit_move_insn (mem, reg);
+	  insn = emit_insn (gen_frame_store (reg, frame_reg_rtx,
+					     info->lr_save_offset + frame_off));
 	  rs6000_frame_related (insn, frame_reg_rtx, sp_off - frame_off,
 				NULL_RTX, NULL_RTX);
 	  END_USE (0);
@@ -3298,10 +3293,13 @@ rs6000_emit_prologue (void)
 
   /* If we need to save CR, put it into r12 or r11.  Choose r12 except when
      r12 will be needed by out-of-line gpr save.  */
-  cr_save_regno = ((DEFAULT_ABI == ABI_AIX || DEFAULT_ABI == ABI_ELFv2)
-		   && !(strategy & (SAVE_INLINE_GPRS
-				    | SAVE_NOINLINE_GPRS_SAVES_LR))
-		   ? 11 : 12);
+  if (DEFAULT_ABI == ABI_AIX
+      && !(strategy & (SAVE_INLINE_GPRS | SAVE_NOINLINE_GPRS_SAVES_LR)))
+    cr_save_regno = 11;
+  else if (DEFAULT_ABI == ABI_ELFv2)
+    cr_save_regno = 11;
+  else
+    cr_save_regno = 12;
   if (!WORLD_SAVE_P (info)
       && info->cr_save_p
       && REGNO (frame_reg_rtx) != cr_save_regno
@@ -4815,6 +4813,10 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 	  gcc_checking_assert (REGNO (frame_reg_rtx) != cr_save_regno);
 	}
       else if (REGNO (frame_reg_rtx) == 12)
+	cr_save_regno = 11;
+
+      /* For ELFv2 r12 is already in use as the GEP.  */
+      if (DEFAULT_ABI == ABI_ELFv2)
 	cr_save_regno = 11;
 
       cr_save_reg = load_cr_save (cr_save_regno, frame_reg_rtx,

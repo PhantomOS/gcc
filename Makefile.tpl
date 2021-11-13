@@ -112,6 +112,9 @@ RPATH_ENVVAR = @RPATH_ENVVAR@
 # executables in PATH.
 GCC_SHLIB_SUBDIR = @GCC_SHLIB_SUBDIR@
 
+# If the build should make suitable code for shared host resources.
+host_shared = @host_shared@
+
 # Build programs are put under this directory.
 BUILD_SUBDIR = @build_subdir@
 # This is set by the configure script to the arguments to use when configuring
@@ -154,6 +157,8 @@ BUILD_EXPORTS = \
 	CC="$(CC_FOR_BUILD)"; export CC; \
 	CFLAGS="$(CFLAGS_FOR_BUILD)"; export CFLAGS; \
 	CONFIG_SHELL="$(SHELL)"; export CONFIG_SHELL; \
+	CPP="$(CPP_FOR_BUILD)"; export CPP; \
+	CPPFLAGS="$(CPPFLAGS_FOR_BUILD)"; export CPPFLAGS; \
 	CXX="$(CXX_FOR_BUILD)"; export CXX; \
 	CXXFLAGS="$(CXXFLAGS_FOR_BUILD)"; export CXXFLAGS; \
 	GFORTRAN="$(GFORTRAN_FOR_BUILD)"; export GFORTRAN; \
@@ -162,6 +167,7 @@ BUILD_EXPORTS = \
 	GDC="$(GDC_FOR_BUILD)"; export GDC; \
 	GDCFLAGS="$(GDCFLAGS_FOR_BUILD)"; export GDCFLAGS; \
 	DLLTOOL="$(DLLTOOL_FOR_BUILD)"; export DLLTOOL; \
+	DSYMUTIL="$(DSYMUTIL_FOR_BUILD)"; export DSYMUTIL; \
 	LD="$(LD_FOR_BUILD)"; export LD; \
 	LDFLAGS="$(LDFLAGS_FOR_BUILD)"; export LDFLAGS; \
 	NM="$(NM_FOR_BUILD)"; export NM; \
@@ -201,8 +207,11 @@ HOST_EXPORTS = \
 	AR="$(AR)"; export AR; \
 	AS="$(AS)"; export AS; \
 	CC_FOR_BUILD="$(CC_FOR_BUILD)"; export CC_FOR_BUILD; \
+	CPP_FOR_BUILD="$(CPP_FOR_BUILD)"; export CPP_FOR_BUILD; \
+	CPPFLAGS_FOR_BUILD="$(CPPFLAGS_FOR_BUILD)"; export CPPFLAGS_FOR_BUILD; \
 	CXX_FOR_BUILD="$(CXX_FOR_BUILD)"; export CXX_FOR_BUILD; \
 	DLLTOOL="$(DLLTOOL)"; export DLLTOOL; \
+	DSYMUTIL="$(DSYMUTIL)"; export DSYMUTIL; \
 	LD="$(LD)"; export LD; \
 	LDFLAGS="$(STAGE1_LDFLAGS) $(LDFLAGS)"; export LDFLAGS; \
 	NM="$(NM)"; export NM; \
@@ -215,6 +224,7 @@ HOST_EXPORTS = \
 	READELF="$(READELF)"; export READELF; \
 	AR_FOR_TARGET="$(AR_FOR_TARGET)"; export AR_FOR_TARGET; \
 	AS_FOR_TARGET="$(AS_FOR_TARGET)"; export AS_FOR_TARGET; \
+	DSYMUTIL_FOR_TARGET="$(DSYMUTIL_FOR_TARGET)"; export DSYMUTIL_FOR_TARGET; \
 	GCC_FOR_TARGET="$(GCC_FOR_TARGET)"; export GCC_FOR_TARGET; \
 	LD_FOR_TARGET="$(LD_FOR_TARGET)"; export LD_FOR_TARGET; \
 	NM_FOR_TARGET="$(NM_FOR_TARGET)"; export NM_FOR_TARGET; \
@@ -297,6 +307,7 @@ BASE_TARGET_EXPORTS = \
 	GOC="$(GOC_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS"; export GOC; \
 	GDC="$(GDC_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS"; export GDC; \
 	DLLTOOL="$(DLLTOOL_FOR_TARGET)"; export DLLTOOL; \
+	DSYMUTIL="$(DSYMUTIL_FOR_TARGET)"; export DSYMUTIL; \
 	LD="$(COMPILER_LD_FOR_TARGET)"; export LD; \
 	LDFLAGS="$(LDFLAGS_FOR_TARGET)"; export LDFLAGS; \
 	LIPO="$(LIPO_FOR_TARGET)"; export LIPO; \
@@ -356,9 +367,12 @@ AR_FOR_BUILD = @AR_FOR_BUILD@
 AS_FOR_BUILD = @AS_FOR_BUILD@
 CC_FOR_BUILD = @CC_FOR_BUILD@
 CFLAGS_FOR_BUILD = @CFLAGS_FOR_BUILD@
+CPP_FOR_BUILD = @CPP_FOR_BUILD@
+CPPFLAGS_FOR_BUILD = @CPPFLAGS_FOR_BUILD@
 CXXFLAGS_FOR_BUILD = @CXXFLAGS_FOR_BUILD@
 CXX_FOR_BUILD = @CXX_FOR_BUILD@
 DLLTOOL_FOR_BUILD = @DLLTOOL_FOR_BUILD@
+DSYMUTIL_FOR_BUILD = @DSYMUTIL_FOR_BUILD@
 GFORTRAN_FOR_BUILD = @GFORTRAN_FOR_BUILD@
 GOC_FOR_BUILD = @GOC_FOR_BUILD@
 GDC_FOR_BUILD = @GDC_FOR_BUILD@
@@ -409,6 +423,7 @@ AR_FLAGS = rc
 CC = @CC@
 CXX = @CXX@
 DLLTOOL = @DLLTOOL@
+DSYMUTIL = @DSYMUTIL@
 LD = @LD@
 LIPO = @LIPO@
 NM = @NM@
@@ -519,6 +534,7 @@ GFORTRAN_FOR_TARGET=$(STAGE_CC_WRAPPER) @GFORTRAN_FOR_TARGET@
 GOC_FOR_TARGET=$(STAGE_CC_WRAPPER) @GOC_FOR_TARGET@
 GDC_FOR_TARGET=$(STAGE_CC_WRAPPER) @GDC_FOR_TARGET@
 DLLTOOL_FOR_TARGET=@DLLTOOL_FOR_TARGET@
+DSYMUTIL_FOR_TARGET=@DSYMUTIL_FOR_TARGET@
 LD_FOR_TARGET=@LD_FOR_TARGET@
 
 LIPO_FOR_TARGET=@LIPO_FOR_TARGET@
@@ -644,6 +660,7 @@ EXTRA_HOST_FLAGS = \
 	'CC=$(CC)' \
 	'CXX=$(CXX)' \
 	'DLLTOOL=$(DLLTOOL)' \
+	'DSYMUTIL=$(DSYMUTIL)' \
 	'GFORTRAN=$(GFORTRAN)' \
 	'GOC=$(GOC)' \
 	'GDC=$(GDC)' \
@@ -702,6 +719,7 @@ EXTRA_TARGET_FLAGS = \
 	 $$(XGCC_FLAGS_FOR_TARGET) $$(TFLAGS)' \
 	'CXXFLAGS=$$(CXXFLAGS_FOR_TARGET)' \
 	'DLLTOOL=$$(DLLTOOL_FOR_TARGET)' \
+	'DSYMUTIL=$$(DSYMUTIL_FOR_TARGET)' \
 	'GFORTRAN=$$(GFORTRAN_FOR_TARGET) $$(XGCC_FLAGS_FOR_TARGET) $$(TFLAGS)' \
 	'GOC=$$(GOC_FOR_TARGET) $$(XGCC_FLAGS_FOR_TARGET) $$(TFLAGS)' \
 	'GOCFLAGS=$$(GOCFLAGS_FOR_TARGET)' \
@@ -824,7 +842,7 @@ do-[+make_target+]:
 # Here are the targets which correspond to the do-X targets.
 
 .PHONY: info installcheck dvi pdf html
-.PHONY: install-info install-pdf install-html
+.PHONY: install-info install-dvi install-pdf install-html
 .PHONY: clean distclean mostlyclean maintainer-clean realclean
 .PHONY: local-clean local-distclean local-maintainer-clean
 info: do-info
@@ -842,6 +860,8 @@ install-info: do-install-info dir.info
 	if [ -f dir.info ]; then \
 	  $(INSTALL_DATA) dir.info $(DESTDIR)$(infodir)/dir.info; \
 	else true; fi
+
+install-dvi: do-install-dvi
 
 install-pdf: do-install-pdf
 

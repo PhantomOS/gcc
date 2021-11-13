@@ -896,9 +896,6 @@ match_clist_expr (gfc_expr **result, gfc_typespec *ts, gfc_array_spec *as)
       expr->ts = *ts;
       expr->value.constructor = array_head;
 
-      expr->rank = as->rank;
-      expr->shape = gfc_get_shape (expr->rank);
-
       /* Validate sizes.  We built expr ourselves, so cons_size will be
 	 constant (we fail above for non-constant expressions).
 	 We still need to verify that the sizes match.  */
@@ -911,6 +908,12 @@ match_clist_expr (gfc_expr **result, gfc_typespec *ts, gfc_array_spec *as)
       mpz_clear (cons_size);
       if (cmp)
 	goto cleanup;
+
+      /* Set the rank/shape to match the LHS as auto-reshape is implied. */
+      expr->rank = as->rank;
+      expr->shape = gfc_get_shape (as->rank);
+      for (int i = 0; i < as->rank; ++i)
+	spec_dimen_size (as, i, &expr->shape[i]);
     }
 
   /* Make sure scalar types match. */
@@ -1551,20 +1554,99 @@ gfc_verify_c_interop_param (gfc_symbol *sym)
 			     sym->ns->proc_name->name);
 	    }
 
+	  /* Per F2018, 18.3.6 (5), pointer + contiguous is not permitted.  */
+	  if (sym->attr.pointer && sym->attr.contiguous)
+	    gfc_error ("Dummy argument %qs at %L may not be a pointer with "
+		       "CONTIGUOUS attribute as procedure %qs is BIND(C)",
+		       sym->name, &sym->declared_at, sym->ns->proc_name->name);
+
+	  /* Per F2018, C1557, pointer/allocatable dummies to a bind(c)
+	     procedure that are default-initialized are not permitted.  */
+	  if ((sym->attr.pointer || sym->attr.allocatable)
+	      && sym->ts.type == BT_DERIVED
+	      && gfc_has_default_initializer (sym->ts.u.derived))
+	    {
+	      gfc_error ("Default-initialized %s dummy argument %qs "
+			 "at %L is not permitted in BIND(C) procedure %qs",
+			 (sym->attr.pointer ? "pointer" : "allocatable"),
+			 sym->name, &sym->declared_at,
+			 sym->ns->proc_name->name);
+	      retval = false;
+	    }
+
           /* Character strings are only C interoperable if they have a
-             length of 1.  */
-          if (sym->ts.type == BT_CHARACTER && !sym->attr.dimension)
+	     length of 1.  However, as an argument they are also iteroperable
+	     when passed as descriptor (which requires len=: or len=*).  */
+	  if (sym->ts.type == BT_CHARACTER)
 	    {
 	      gfc_charlen *cl = sym->ts.u.cl;
-	      if (!cl || !cl->length || cl->length->expr_type != EXPR_CONSTANT
-                  || mpz_cmp_si (cl->length->value.integer, 1) != 0)
+
+	      if (sym->attr.allocatable || sym->attr.pointer)
 		{
-		  gfc_error ("Character argument %qs at %L "
-			     "must be length 1 because "
-			     "procedure %qs is BIND(C)",
-			     sym->name, &sym->declared_at,
-			     sym->ns->proc_name->name);
+		  /* F2018, 18.3.6 (6).  */
+		  if (!sym->ts.deferred)
+		    {
+		      if (sym->attr.allocatable)
+			gfc_error ("Allocatable character dummy argument %qs "
+				   "at %L must have deferred length as "
+				   "procedure %qs is BIND(C)", sym->name,
+				   &sym->declared_at, sym->ns->proc_name->name);
+		      else
+			gfc_error ("Pointer character dummy argument %qs at %L "
+				   "must have deferred length as procedure %qs "
+				   "is BIND(C)", sym->name, &sym->declared_at,
+				   sym->ns->proc_name->name);
+		      retval = false;
+		    }
+		  else if (!gfc_notify_std (GFC_STD_F2018,
+					    "Deferred-length character dummy "
+					    "argument %qs at %L of procedure "
+					    "%qs with BIND(C) attribute",
+					    sym->name, &sym->declared_at,
+					    sym->ns->proc_name->name))
+		    retval = false;
+		}
+	      else if (sym->attr.value
+		       && (!cl || !cl->length
+			   || cl->length->expr_type != EXPR_CONSTANT
+			   || mpz_cmp_si (cl->length->value.integer, 1) != 0))
+		{
+		  gfc_error ("Character dummy argument %qs at %L must be "
+			     "of length 1 as it has the VALUE attribute",
+			     sym->name, &sym->declared_at);
 		  retval = false;
+		}
+	      else if (!cl || !cl->length)
+		{
+		  /* Assumed length; F2018, 18.3.6 (5)(2).
+		     Uses the CFI array descriptor - also for scalars and
+		     explicit-size/assumed-size arrays.  */
+		  if (!gfc_notify_std (GFC_STD_F2018,
+				      "Assumed-length character dummy argument "
+				      "%qs at %L of procedure %qs with BIND(C) "
+				      "attribute", sym->name, &sym->declared_at,
+				      sym->ns->proc_name->name))
+		    retval = false;
+		}
+	      else if (cl->length->expr_type != EXPR_CONSTANT
+		       || mpz_cmp_si (cl->length->value.integer, 1) != 0)
+		{
+		  /* F2018, 18.3.6, (5), item 4.  */
+		  if (!sym->attr.dimension
+		      || sym->as->type == AS_ASSUMED_SIZE
+		      || sym->as->type == AS_EXPLICIT)
+		    {
+		      gfc_error ("Character dummy argument %qs at %L must be "
+				 "of constant length of one or assumed length, "
+				 "unless it has assumed shape or assumed rank, "
+				 "as procedure %qs has the BIND(C) attribute",
+				 sym->name, &sym->declared_at,
+				 sym->ns->proc_name->name);
+		      retval = false;
+		    }
+		  /* else: valid only since F2018 - and an assumed-shape/rank
+		     array; however, gfc_notify_std is already called when
+		     those array types are used. Thus, silently accept F200x. */
 		}
 	    }
 
@@ -2023,6 +2105,14 @@ add_init_expr_to_sym (const char *name, gfc_expr **initp, locus *var_locus)
 	    }
 	}
 
+      if (sym->attr.flavor == FL_PARAMETER && sym->attr.dimension && sym->as
+	  && sym->as->rank && init->rank && init->rank != sym->as->rank)
+	{
+	  gfc_error ("Rank mismatch of array at %L and its initializer "
+		     "(%d/%d)", &sym->declared_at, sym->as->rank, init->rank);
+	  return false;
+	}
+
       /* If sym is implied-shape, set its upper bounds from init.  */
       if (sym->attr.flavor == FL_PARAMETER && sym->attr.dimension
 	  && sym->as->type == AS_IMPLIED_SHAPE)
@@ -2081,6 +2171,24 @@ add_init_expr_to_sym (const char *name, gfc_expr **initp, locus *var_locus)
 	  sym->as->type = AS_EXPLICIT;
 	}
 
+      /* Ensure that explicit bounds are simplified.  */
+      if (sym->attr.flavor == FL_PARAMETER && sym->attr.dimension
+	  && sym->as->type == AS_EXPLICIT)
+	{
+	  for (int dim = 0; dim < sym->as->rank; ++dim)
+	    {
+	      gfc_expr *e;
+
+	      e = sym->as->lower[dim];
+	      if (e->expr_type != EXPR_CONSTANT)
+		gfc_reduce_init_expr (e);
+
+	      e = sym->as->upper[dim];
+	      if (e->expr_type != EXPR_CONSTANT)
+		gfc_reduce_init_expr (e);
+	    }
+	}
+
       /* Need to check if the expression we initialized this
 	 to was one of the iso_c_binding named constants.  If so,
 	 and we're a parameter (constant), let it be iso_c.
@@ -2108,12 +2216,16 @@ add_init_expr_to_sym (const char *name, gfc_expr **initp, locus *var_locus)
 	  gfc_expr *array;
 	  int n;
 	  if (sym->attr.flavor == FL_PARAMETER
-		&& init->expr_type == EXPR_CONSTANT
-		&& spec_size (sym->as, &size)
-		&& mpz_cmp_si (size, 0) > 0)
+	      && gfc_is_constant_expr (init)
+	      && (init->expr_type == EXPR_CONSTANT
+		  || init->expr_type == EXPR_STRUCTURE)
+	      && spec_size (sym->as, &size)
+	      && mpz_cmp_si (size, 0) > 0)
 	    {
 	      array = gfc_get_array_expr (init->ts.type, init->ts.kind,
 					  &init->where);
+	      if (init->ts.type == BT_DERIVED)
+		array->ts.u.derived = init->ts.u.derived;
 	      for (n = 0; n < (int)mpz_get_si (size); n++)
 		gfc_constructor_append_expr (&array->value.constructor,
 					     n == 0
@@ -3024,7 +3136,7 @@ cleanup:
    This assumes that the byte size is equal to the kind number for
    non-COMPLEX types, and equal to twice the kind number for COMPLEX.  */
 
-match
+static match
 gfc_match_old_kind_spec (gfc_typespec *ts)
 {
   match m;
@@ -3609,7 +3721,7 @@ insert_parameter_exprs (gfc_expr* e, gfc_symbol* sym ATTRIBUTE_UNUSED,
 }
 
 
-bool
+static bool
 gfc_insert_kind_parameter_exprs (gfc_expr *e)
 {
   return gfc_traverse_expr (e, NULL, &insert_parameter_exprs, 0);
@@ -4611,7 +4723,7 @@ gfc_match_implicit_none (void)
   if (c == '(')
     {
       (void) gfc_next_ascii_char ();
-      if (!gfc_notify_std (GFC_STD_F2018, "IMPORT NONE with spec list at %C"))
+      if (!gfc_notify_std (GFC_STD_F2018, "IMPLICIT NONE with spec list at %C"))
 	return MATCH_ERROR;
 
       gfc_gobble_whitespace ();
@@ -5488,14 +5600,6 @@ match_attr_spec (void)
 		  m = MATCH_ERROR;
 		  goto cleanup;
 		}
-	      if (current_ts.kind != gfc_default_integer_kind)
-		{
-		  gfc_error ("Component with KIND attribute at %C must be "
-			     "default integer kind (%d)",
-			      gfc_default_integer_kind);
-		  m = MATCH_ERROR;
-		  goto cleanup;
-		}
 	    }
 	  else if (d == DECL_LEN)
 	    {
@@ -5512,14 +5616,6 @@ match_attr_spec (void)
 		{
 		  gfc_error ("Component with LEN attribute at %C must be "
 			     "INTEGER");
-		  m = MATCH_ERROR;
-		  goto cleanup;
-		}
-	      if (current_ts.kind != gfc_default_integer_kind)
-		{
-		  gfc_error ("Component with LEN attribute at %C must be "
-			     "default integer kind (%d)",
-			      gfc_default_integer_kind);
 		  m = MATCH_ERROR;
 		  goto cleanup;
 		}
@@ -5763,7 +5859,7 @@ set_binding_label (const char **dest_label, const char *sym_name,
 /* Set the status of the given common block as being BIND(C) or not,
    depending on the given parameter, is_bind_c.  */
 
-void
+static void
 set_com_block_bind_c (gfc_common_head *com_block, int is_bind_c)
 {
   com_block->is_bind_c = is_bind_c;
@@ -5951,7 +6047,7 @@ verify_bind_c_sym (gfc_symbol *tmp_sym, gfc_typespec *ts,
    the type is C interoperable.  Errors are reported by the functions
    used to set/test these fields.  */
 
-bool
+static bool
 set_verify_bind_c_sym (gfc_symbol *tmp_sym, int num_idents)
 {
   bool retval = true;
@@ -5971,7 +6067,7 @@ set_verify_bind_c_sym (gfc_symbol *tmp_sym, int num_idents)
 /* Set the fields marking the given common block as BIND(C), including
    a binding label, and report any errors encountered.  */
 
-bool
+static bool
 set_verify_bind_c_com_block (gfc_common_head *com_block, int num_idents)
 {
   bool retval = true;
@@ -5991,7 +6087,7 @@ set_verify_bind_c_com_block (gfc_common_head *com_block, int num_idents)
 /* Retrieve the list of one or more identifiers that the given bind(c)
    attribute applies to.  */
 
-bool
+static bool
 get_bind_c_idents (void)
 {
   char name[GFC_MAX_SYMBOL_LEN + 1];
@@ -6700,7 +6796,7 @@ match_result (gfc_symbol *function, gfc_symbol **result)
    clause and BIND(C), either one, or neither.  The draft does not
    require them to come in a specific order.  */
 
-match
+static match
 gfc_match_suffix (gfc_symbol *sym, gfc_symbol **result)
 {
   match is_bind_c;   /* Found bind(c).  */
@@ -8325,6 +8421,7 @@ gfc_match_end (gfc_statement *st)
       break;
 
     case COMP_BLOCK:
+    case COMP_OMP_STRICTLY_STRUCTURED_BLOCK:
       *st = ST_END_BLOCK;
       target = " block";
       eos_ok = 0;
@@ -10011,7 +10108,7 @@ check_extended_derived_type (char *name)
    not a handled attribute, and MATCH_YES otherwise.  TODO: More error
    checking on attribute conflicts needs to be done.  */
 
-match
+static match
 gfc_get_type_attr_spec (symbol_attribute *attr, char *name)
 {
   /* See if the derived type is marked as private.  */
@@ -11689,6 +11786,7 @@ gfc_match_gcc_unroll (void)
 {
   int value;
 
+  /* FIXME: use gfc_match_small_literal_int instead, delete small_int  */
   if (gfc_match_small_int (&value) == MATCH_YES)
     {
       if (value < 0 || value > USHRT_MAX)

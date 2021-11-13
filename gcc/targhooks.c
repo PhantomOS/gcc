@@ -660,6 +660,14 @@ default_predict_doloop_p (class loop *loop ATTRIBUTE_UNUSED)
   return false;
 }
 
+/* By default, just use the input MODE itself.  */
+
+machine_mode
+default_preferred_doloop_mode (machine_mode mode)
+{
+  return mode;
+}
+
 /* NULL if INSN insn is valid within a low-overhead loop, otherwise returns
    an error message.
 
@@ -768,6 +776,18 @@ void
 hook_void_CUMULATIVE_ARGS_tree (cumulative_args_t ca ATTRIBUTE_UNUSED,
 				tree ATTRIBUTE_UNUSED)
 {
+}
+
+/* Default implementation of TARGET_PUSH_ARGUMENT.  */
+
+bool
+default_push_argument (unsigned int)
+{
+#ifdef PUSH_ROUNDING
+  return !ACCUMULATE_OUTGOING_ARGS;
+#else
+  return false;
+#endif
 }
 
 void
@@ -1454,65 +1474,10 @@ default_empty_mask_is_expensive (unsigned ifn)
    loop body, and epilogue) for a vectorized loop or block.  So allocate an
    array of three unsigned ints, set it to zero, and return its address.  */
 
-void *
-default_init_cost (class loop *loop_info ATTRIBUTE_UNUSED,
-		   bool costing_for_scalar ATTRIBUTE_UNUSED)
+vector_costs *
+default_vectorize_create_costs (vec_info *vinfo, bool costing_for_scalar)
 {
-  unsigned *cost = XNEWVEC (unsigned, 3);
-  cost[vect_prologue] = cost[vect_body] = cost[vect_epilogue] = 0;
-  return cost;
-}
-
-/* By default, the cost model looks up the cost of the given statement
-   kind and mode, multiplies it by the occurrence count, accumulates
-   it into the cost specified by WHERE, and returns the cost added.  */
-
-unsigned
-default_add_stmt_cost (class vec_info *vinfo, void *data, int count,
-		       enum vect_cost_for_stmt kind,
-		       class _stmt_vec_info *stmt_info, tree vectype,
-		       int misalign,
-		       enum vect_cost_model_location where)
-{
-  unsigned *cost = (unsigned *) data;
-  unsigned retval = 0;
-  int stmt_cost = targetm.vectorize.builtin_vectorization_cost (kind, vectype,
-								misalign);
-   /* Statements in an inner loop relative to the loop being
-      vectorized are weighted more heavily.  The value here is
-      arbitrary and could potentially be improved with analysis.  */
-  if (where == vect_body && stmt_info
-      && stmt_in_inner_loop_p (vinfo, stmt_info))
-    {
-      loop_vec_info loop_vinfo = dyn_cast<loop_vec_info> (vinfo);
-      gcc_assert (loop_vinfo);
-      count *= LOOP_VINFO_INNER_LOOP_COST_FACTOR (loop_vinfo);
-    }
-
-  retval = (unsigned) (count * stmt_cost);
-  cost[where] += retval;
-
-  return retval;
-}
-
-/* By default, the cost model just returns the accumulated costs.  */
-
-void
-default_finish_cost (void *data, unsigned *prologue_cost,
-		     unsigned *body_cost, unsigned *epilogue_cost)
-{
-  unsigned *cost = (unsigned *) data;
-  *prologue_cost = cost[vect_prologue];
-  *body_cost     = cost[vect_body];
-  *epilogue_cost = cost[vect_epilogue];
-}
-
-/* Free the cost data.  */
-
-void
-default_destroy_cost_data (void *data)
-{
-  free (data);
+  return new vector_costs (vinfo, costing_for_scalar);
 }
 
 /* Determine whether or not a pointer mode is valid. Assume defaults
@@ -2180,7 +2145,7 @@ pch_option_mismatch (const char *option)
 /* Default version of pch_valid_p.  */
 
 const char *
-default_pch_valid_p (const void *data_p, size_t len)
+default_pch_valid_p (const void *data_p, size_t len ATTRIBUTE_UNUSED)
 {
   struct cl_option_state state;
   const char *data = (const char *)data_p;
@@ -2201,7 +2166,6 @@ default_pch_valid_p (const void *data_p, size_t len)
 
       memcpy (&tf, data, sizeof (target_flags));
       data += sizeof (target_flags);
-      len -= sizeof (target_flags);
       r = targetm.check_pch_target_flags (tf);
       if (r != NULL)
 	return r;
@@ -2213,7 +2177,6 @@ default_pch_valid_p (const void *data_p, size_t len)
 	if (memcmp (data, state.data, state.size) != 0)
 	  return pch_option_mismatch (cl_options[i].opt_text);
 	data += state.size;
-	len -= state.size;
       }
 
   return NULL;
@@ -2233,36 +2196,6 @@ bool
 default_member_type_forces_blk (const_tree, machine_mode)
 {
   return false;
-}
-
-rtx
-default_load_bounds_for_arg (rtx addr ATTRIBUTE_UNUSED,
-			     rtx ptr ATTRIBUTE_UNUSED,
-			     rtx bnd ATTRIBUTE_UNUSED)
-{
-  gcc_unreachable ();
-}
-
-void
-default_store_bounds_for_arg (rtx val ATTRIBUTE_UNUSED,
-			      rtx addr ATTRIBUTE_UNUSED,
-			      rtx bounds ATTRIBUTE_UNUSED,
-			      rtx to ATTRIBUTE_UNUSED)
-{
-  gcc_unreachable ();
-}
-
-rtx
-default_load_returned_bounds (rtx slot ATTRIBUTE_UNUSED)
-{
-  gcc_unreachable ();
-}
-
-void
-default_store_returned_bounds (rtx slot ATTRIBUTE_UNUSED,
-			       rtx bounds ATTRIBUTE_UNUSED)
-{
-  gcc_unreachable ();
 }
 
 /* Default version of canonicalize_comparison.  */
@@ -2433,12 +2366,12 @@ default_max_noce_ifcvt_seq_cost (edge e)
 
   if (predictable_p)
     {
-      if (global_options_set.x_param_max_rtl_if_conversion_predictable_cost)
+      if (OPTION_SET_P (param_max_rtl_if_conversion_predictable_cost))
 	return param_max_rtl_if_conversion_predictable_cost;
     }
   else
     {
-      if (global_options_set.x_param_max_rtl_if_conversion_unpredictable_cost)
+      if (OPTION_SET_P (param_max_rtl_if_conversion_unpredictable_cost))
 	return param_max_rtl_if_conversion_unpredictable_cost;
     }
 
@@ -2632,6 +2565,13 @@ default_memtag_untagged_pointer (rtx tagged_pointer, rtx target)
 					   OPTAB_DIRECT);
   gcc_assert (untagged_base);
   return untagged_base;
+}
+
+/* The default implementation of TARGET_GCOV_TYPE_SIZE.  */
+HOST_WIDE_INT
+default_gcov_type_size (void)
+{
+  return TYPE_PRECISION (long_long_integer_type_node) > 32 ? 64 : 32;
 }
 
 #include "gt-targhooks.h"

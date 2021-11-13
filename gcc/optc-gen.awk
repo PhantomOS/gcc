@@ -195,10 +195,14 @@ for (i = 0; i < n_extra_vars; i++) {
 }
 for (i = 0; i < n_opts; i++) {
 	name = var_name(flags[i]);
-	if (name == "")
-		continue;
-
 	init = opt_args("Init", flags[i])
+
+	if (name == "") {
+		if (init != "")
+		    print "#error " opts[i] " must specify Var to use Init"
+		continue;
+	}
+
 	if (init != "") {
 		if (name in var_init && var_init[name] != init)
 			print "#error multiple initializers for " name
@@ -418,7 +422,7 @@ for (i = 0; i < n_opts; i++) {
 		       cl_flags, cl_bit_fields)
 	printf("    %s, %s, %s }%s\n", var_ref(opts[i], flags[i]),
 	       var_set(flags[i]), integer_range_info(opt_args("IntegerRange", flags[i]),
-		    opt_args("Init", flags[i]), opts[i]), comma)
+		    opt_args("Init", flags[i]), opts[i], flag_set_p("UInteger", flags[i])), comma)
 
 	# Bump up the informational option index.
 	++optindex

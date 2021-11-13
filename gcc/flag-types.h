@@ -29,7 +29,10 @@ enum debug_info_type
   DINFO_TYPE_DWARF2 = 2,	  /* Dwarf v2 debug info.  */
   DINFO_TYPE_XCOFF = 3,		  /* IBM/Xcoff debug info.  */
   DINFO_TYPE_VMS = 4,		  /* VMS debug info.  */
-  DINFO_TYPE_MAX = DINFO_TYPE_VMS /* Marker only.  */
+  DINFO_TYPE_CTF = 5,		  /* CTF debug info.  */
+  DINFO_TYPE_BTF = 6,		  /* BTF debug info.  */
+  DINFO_TYPE_BTF_WITH_CORE = 7,	  /* BTF debug info with CO-RE relocations.  */
+  DINFO_TYPE_MAX = DINFO_TYPE_BTF_WITH_CORE /* Marker only.  */
 };
 
 #define NO_DEBUG      (0U)
@@ -41,6 +44,13 @@ enum debug_info_type
 #define XCOFF_DEBUG   (1U << DINFO_TYPE_XCOFF)
 /* Write VMS debug info (using vmsdbgout.c).  */
 #define VMS_DEBUG     (1U << DINFO_TYPE_VMS)
+/* Write CTF debug info (using ctfout.c).  */
+#define CTF_DEBUG     (1U << DINFO_TYPE_CTF)
+/* Write BTF debug info (using btfout.c).  */
+#define BTF_DEBUG     (1U << DINFO_TYPE_BTF)
+/* Write BTF debug info for BPF CO-RE usecase (using btfout.c).  */
+#define BTF_WITH_CORE_DEBUG     (1U << DINFO_TYPE_BTF_WITH_CORE)
+
 /* Note: Adding new definitions to handle -combination- of debug formats,
    like VMS_AND_DWARF2_DEBUG is not recommended.  This definition remains
    here for historical reasons.  */
@@ -54,6 +64,19 @@ enum debug_info_levels
   DINFO_LEVEL_TERSE,	/* Write minimal info to support tracebacks only.  */
   DINFO_LEVEL_NORMAL,	/* Write info for all declarations (and line table).  */
   DINFO_LEVEL_VERBOSE	/* Write normal info plus #define/#undef info.  */
+};
+
+/* CTF debug info levels.
+   CTF debug info levels are untied with DWARF debug info levels because CTF
+   may co-exist with DWARF.  */
+enum ctf_debug_info_levels
+{
+  CTFINFO_LEVEL_NONE = 0,     /* Write no CTF debug info.  */
+  CTFINFO_LEVEL_TERSE = 1,    /* Write CTF information to support tracebacks
+				 only.  Not Implemented.  */
+  CTFINFO_LEVEL_NORMAL = 2    /* Write CTF type information for all entities
+				 (functions, data objects, variables etc.)
+				 at file-scope or global-scope only.  */
 };
 
 /* A major contribution to object and executable size is debug
@@ -168,10 +191,6 @@ enum ira_region
   IRA_REGION_ONE,
   IRA_REGION_ALL,
   IRA_REGION_MIXED,
-  /* This value means that there were no options -fira-region on the
-     command line and that we should choose a value depending on the
-     used -O option.  */
-  IRA_REGION_AUTODETECT
 };
 
 /* The options for excess precision.  */
@@ -179,7 +198,8 @@ enum excess_precision
 {
   EXCESS_PRECISION_DEFAULT,
   EXCESS_PRECISION_FAST,
-  EXCESS_PRECISION_STANDARD
+  EXCESS_PRECISION_STANDARD,
+  EXCESS_PRECISION_FLOAT16
 };
 
 /* The options for which values of FLT_EVAL_METHOD are permissible.  */
@@ -255,6 +275,13 @@ enum vect_cost_model {
   VECT_COST_MODEL_DYNAMIC = -1,
   VECT_COST_MODEL_UNLIMITED = 0,
   VECT_COST_MODEL_DEFAULT = 1
+};
+
+/* Automatic variable initialization type.  */
+enum auto_init_type {
+  AUTO_INIT_UNINITIALIZED = 0,
+  AUTO_INIT_PATTERN = 1,
+  AUTO_INIT_ZERO = 2
 };
 
 /* Different instrumentation modes.  */
@@ -422,17 +449,40 @@ enum parloops_schedule_type
   PARLOOPS_SCHEDULE_RUNTIME
 };
 
+/* Ranger debug mode.  */
+enum ranger_debug
+{
+  RANGER_DEBUG_NONE = 0,
+  RANGER_DEBUG_TRACE = 1,
+  RANGER_DEBUG_CACHE = 2,
+  RANGER_DEBUG_GORI = 4,
+  RANGER_DEBUG_TRACE_GORI = (RANGER_DEBUG_TRACE | RANGER_DEBUG_GORI),
+  RANGER_DEBUG_TRACE_CACHE = (RANGER_DEBUG_TRACE | RANGER_DEBUG_CACHE),
+  RANGER_DEBUG_ALL = (RANGER_DEBUG_GORI | RANGER_DEBUG_CACHE
+		      | RANGER_DEBUG_TRACE)
+};
+
+/* Jump threader verbose dumps.  */
+enum threader_debug
+{
+  THREADER_DEBUG_NONE = 0,
+  THREADER_DEBUG_ALL = 1
+};
+
 /* EVRP mode.  */
 enum evrp_mode
 {
-  EVRP_MODE_EVRP_FIRST = 0,
-  EVRP_MODE_EVRP_ONLY = 1,
-  EVRP_MODE_RVRP_ONLY = 2,
-  EVRP_MODE_RVRP_FIRST = 3,
-  EVRP_MODE_TRACE = 4,
-  EVRP_MODE_DEBUG = 8 | EVRP_MODE_TRACE,
-  EVRP_MODE_RVRP_TRACE = EVRP_MODE_RVRP_ONLY | EVRP_MODE_TRACE,
-  EVRP_MODE_RVRP_DEBUG = EVRP_MODE_RVRP_ONLY | EVRP_MODE_DEBUG
+  EVRP_MODE_RVRP_ONLY,
+  EVRP_MODE_EVRP_ONLY,
+  EVRP_MODE_EVRP_FIRST,
+  EVRP_MODE_RVRP_FIRST
+};
+
+/* VRP modes.  */
+enum vrp_mode
+{
+  VRP_MODE_VRP,
+  VRP_MODE_RANGER
 };
 
 /* Modes of OpenACC 'kernels' constructs handling.  */

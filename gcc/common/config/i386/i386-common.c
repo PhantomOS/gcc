@@ -82,6 +82,8 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTION_MASK_ISA2_AVX5124VNNIW_SET OPTION_MASK_ISA2_AVX5124VNNIW
 #define OPTION_MASK_ISA_AVX512VBMI2_SET \
   (OPTION_MASK_ISA_AVX512VBMI2 | OPTION_MASK_ISA_AVX512F_SET)
+#define OPTION_MASK_ISA_AVX512FP16_SET OPTION_MASK_ISA_AVX512BW_SET
+#define OPTION_MASK_ISA2_AVX512FP16_SET OPTION_MASK_ISA2_AVX512FP16
 #define OPTION_MASK_ISA_AVX512VNNI_SET \
   (OPTION_MASK_ISA_AVX512VNNI | OPTION_MASK_ISA_AVX512F_SET)
 #define OPTION_MASK_ISA2_AVXVNNI_SET OPTION_MASK_ISA2_AVXVNNI
@@ -231,6 +233,8 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTION_MASK_ISA2_AVX5124FMAPS_UNSET OPTION_MASK_ISA2_AVX5124FMAPS
 #define OPTION_MASK_ISA2_AVX5124VNNIW_UNSET OPTION_MASK_ISA2_AVX5124VNNIW
 #define OPTION_MASK_ISA_AVX512VBMI2_UNSET OPTION_MASK_ISA_AVX512VBMI2
+#define OPTION_MASK_ISA_AVX512FP16_UNSET OPTION_MASK_ISA_AVX512BW_UNSET
+#define OPTION_MASK_ISA2_AVX512FP16_UNSET OPTION_MASK_ISA2_AVX512FP16
 #define OPTION_MASK_ISA_AVX512VNNI_UNSET OPTION_MASK_ISA_AVX512VNNI
 #define OPTION_MASK_ISA2_AVXVNNI_UNSET OPTION_MASK_ISA2_AVXVNNI
 #define OPTION_MASK_ISA_AVX512VPOPCNTDQ_UNSET OPTION_MASK_ISA_AVX512VPOPCNTDQ
@@ -313,7 +317,8 @@ along with GCC; see the file COPYING3.  If not see
   (OPTION_MASK_ISA2_AVX512BF16_UNSET \
    | OPTION_MASK_ISA2_AVX5124FMAPS_UNSET \
    | OPTION_MASK_ISA2_AVX5124VNNIW_UNSET \
-   | OPTION_MASK_ISA2_AVX512VP2INTERSECT_UNSET)
+   | OPTION_MASK_ISA2_AVX512VP2INTERSECT_UNSET \
+   | OPTION_MASK_ISA2_AVX512FP16_UNSET)
 #define OPTION_MASK_ISA2_GENERAL_REGS_ONLY_UNSET \
   (OPTION_MASK_ISA2_AVX512F_UNSET)
 #define OPTION_MASK_ISA2_AVX_UNSET OPTION_MASK_ISA2_AVX2_UNSET
@@ -326,7 +331,9 @@ along with GCC; see the file COPYING3.  If not see
   (OPTION_MASK_ISA2_SSE3_UNSET | OPTION_MASK_ISA2_KL_UNSET)
 #define OPTION_MASK_ISA2_SSE_UNSET OPTION_MASK_ISA2_SSE2_UNSET
 
-#define OPTION_MASK_ISA2_AVX512BW_UNSET OPTION_MASK_ISA2_AVX512BF16_UNSET
+#define OPTION_MASK_ISA2_AVX512BW_UNSET \
+  (OPTION_MASK_ISA2_AVX512BF16_UNSET \
+    | OPTION_MASK_ISA2_AVX512FP16_UNSET)
 
 /* Set 1 << value as value of -malign-FLAG option.  */
 
@@ -354,16 +361,39 @@ ix86_handle_option (struct gcc_options *opts,
     case OPT_mgeneral_regs_only:
       if (value)
 	{
+	  HOST_WIDE_INT general_regs_only_flags = 0;
+	  HOST_WIDE_INT general_regs_only_flags2 = 0;
+
+	  /* NB: Enable the GPR only instructions which are enabled
+	     implicitly by SSE ISAs unless they have been disabled
+	     explicitly.  */
+	  if (TARGET_SSE4_2_P (opts->x_ix86_isa_flags))
+	    {
+	      if (!TARGET_EXPLICIT_CRC32_P (opts))
+		general_regs_only_flags |= OPTION_MASK_ISA_CRC32;
+	      if (!TARGET_EXPLICIT_POPCNT_P (opts))
+		general_regs_only_flags |= OPTION_MASK_ISA_POPCNT;
+	    }
+	  if (TARGET_SSE3_P (opts->x_ix86_isa_flags))
+	    {
+	      if (!TARGET_EXPLICIT_MWAIT_P (opts))
+		general_regs_only_flags2 |= OPTION_MASK_ISA2_MWAIT;
+	    }
+
 	  /* Disable MMX, SSE and x87 instructions if only
 	     general registers are allowed.  */
 	  opts->x_ix86_isa_flags
 	    &= ~OPTION_MASK_ISA_GENERAL_REGS_ONLY_UNSET;
 	  opts->x_ix86_isa_flags2
 	    &= ~OPTION_MASK_ISA2_GENERAL_REGS_ONLY_UNSET;
+	  opts->x_ix86_isa_flags |= general_regs_only_flags;
+	  opts->x_ix86_isa_flags2 |= general_regs_only_flags2;
 	  opts->x_ix86_isa_flags_explicit
-	    |= OPTION_MASK_ISA_GENERAL_REGS_ONLY_UNSET;
+	    |= (OPTION_MASK_ISA_GENERAL_REGS_ONLY_UNSET
+		| general_regs_only_flags);
 	  opts->x_ix86_isa_flags2_explicit
-	    |= OPTION_MASK_ISA2_GENERAL_REGS_ONLY_UNSET;
+	    |= (OPTION_MASK_ISA2_GENERAL_REGS_ONLY_UNSET
+		| general_regs_only_flags2);
 
 	  opts->x_target_flags &= ~MASK_80387;
 	}
@@ -827,6 +857,21 @@ ix86_handle_option (struct gcc_options *opts,
 	{
 	  opts->x_ix86_isa_flags &= ~OPTION_MASK_ISA_AVX512VBMI2_UNSET;
 	  opts->x_ix86_isa_flags_explicit |= OPTION_MASK_ISA_AVX512VBMI2_UNSET;
+	}
+      return true;
+
+    case OPT_mavx512fp16:
+      if (value)
+	{
+	  opts->x_ix86_isa_flags2 |= OPTION_MASK_ISA2_AVX512FP16_SET;
+	  opts->x_ix86_isa_flags2_explicit |= OPTION_MASK_ISA2_AVX512FP16_SET;
+	  opts->x_ix86_isa_flags |= OPTION_MASK_ISA_AVX512FP16_SET;
+	  opts->x_ix86_isa_flags_explicit |= OPTION_MASK_ISA_AVX512FP16_SET;
+	}
+      else
+	{
+	  opts->x_ix86_isa_flags2 &= ~OPTION_MASK_ISA2_AVX512FP16_UNSET;
+	  opts->x_ix86_isa_flags2_explicit |= OPTION_MASK_ISA2_AVX512FP16_UNSET;
 	}
       return true;
 
@@ -1890,7 +1935,7 @@ const pta processor_alias_table[] =
     M_CPU_TYPE (INTEL_GOLDMONT), P_PROC_SSE4_2},
   {"goldmont-plus", PROCESSOR_GOLDMONT_PLUS, CPU_GLM, PTA_GOLDMONT_PLUS,
     M_CPU_TYPE (INTEL_GOLDMONT_PLUS), P_PROC_SSE4_2},
-  {"tremont", PROCESSOR_TREMONT, CPU_GLM, PTA_TREMONT,
+  {"tremont", PROCESSOR_TREMONT, CPU_HASWELL, PTA_TREMONT,
     M_CPU_TYPE (INTEL_TREMONT), P_PROC_SSE4_2},
   {"knl", PROCESSOR_KNL, CPU_SLM, PTA_KNL,
     M_CPU_TYPE (INTEL_KNL), P_PROC_AVX512F},

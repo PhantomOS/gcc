@@ -497,7 +497,7 @@ fix_range (const char *const_str)
       break;
 
   if (i > FP_REG_LAST)
-    target_flags |= MASK_DISABLE_FPREGS;
+    target_flags |= MASK_SOFT_FLOAT;
 }
 
 /* Implement the TARGET_OPTION_OVERRIDE hook.  */
@@ -539,6 +539,16 @@ pa_option_override (void)
       warning (0, "%<-g%> is only supported when using GAS on this processor");
       warning (0, "%<-g%> option disabled");
       write_symbols = NO_DEBUG;
+    }
+
+  if (TARGET_64BIT && TARGET_HPUX)
+    {
+      /* DWARF5 is not supported by gdb.  Don't emit DWARF5 unless
+	 specifically selected.  */
+      if (!OPTION_SET_P (dwarf_strict))
+	dwarf_strict = 1;
+      if (!OPTION_SET_P (dwarf_version))
+	dwarf_version = 4;
     }
 
   /* We only support the "big PIC" model now.  And we always generate PIC
@@ -1568,14 +1578,14 @@ hppa_rtx_costs (rtx x, machine_mode mode, int outer_code,
 	}
       else if (mode == DImode)
 	{
-	  if (TARGET_PA_11 && !TARGET_DISABLE_FPREGS && !TARGET_SOFT_FLOAT)
-	    *total = COSTS_N_INSNS (32);
+	  if (TARGET_PA_11 && !TARGET_SOFT_FLOAT && !TARGET_SOFT_MULT)
+	    *total = COSTS_N_INSNS (25);
 	  else
 	    *total = COSTS_N_INSNS (80);
 	}
       else
 	{
-	  if (TARGET_PA_11 && !TARGET_DISABLE_FPREGS && !TARGET_SOFT_FLOAT)
+	  if (TARGET_PA_11 && !TARGET_SOFT_FLOAT && !TARGET_SOFT_MULT)
 	    *total = COSTS_N_INSNS (8);
 	  else
 	    *total = COSTS_N_INSNS (20);
@@ -6540,17 +6550,15 @@ hppa_gimplify_va_arg_expr (tree valist, tree type, gimple_seq *pre_p,
 
 /* True if MODE is valid for the target.  By "valid", we mean able to
    be manipulated in non-trivial ways.  In particular, this means all
-   the arithmetic is supported.
-
-   Currently, TImode is not valid as the HP 64-bit runtime documentation
-   doesn't document the alignment and calling conventions for this type. 
-   Thus, we return false when PRECISION is 2 * BITS_PER_WORD and
-   2 * BITS_PER_WORD isn't equal LONG_LONG_TYPE_SIZE.  */
+   the arithmetic is supported.  */
 
 static bool
 pa_scalar_mode_supported_p (scalar_mode mode)
 {
   int precision = GET_MODE_PRECISION (mode);
+
+  if (TARGET_64BIT && mode == TImode)
+    return true;
 
   switch (GET_MODE_CLASS (mode))
     {
@@ -9080,9 +9088,7 @@ pa_asm_output_aligned_common (FILE *stream,
   max_common_align = TARGET_64BIT ? 128 : (size >= 4096 ? 256 : 64);
   if (align > max_common_align)
     {
-      warning (0, "alignment (%u) for %s exceeds maximum alignment "
-	       "for global common data.  Using %u",
-	       align / BITS_PER_UNIT, name, max_common_align / BITS_PER_UNIT);
+      /* Alignment exceeds maximum alignment for global common data.  */
       align = max_common_align;
     }
 
@@ -10619,7 +10625,7 @@ pa_conditional_register_usage (void)
       for (i = 33; i < 56; i += 2)
 	fixed_regs[i] = call_used_regs[i] = 1;
     }
-  if (TARGET_DISABLE_FPREGS || TARGET_SOFT_FLOAT)
+  if (TARGET_SOFT_FLOAT)
     {
       for (i = FP_REG_FIRST; i <= FP_REG_LAST; i++)
 	fixed_regs[i] = call_used_regs[i] = 1;

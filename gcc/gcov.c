@@ -638,6 +638,9 @@ static int flag_preserve_paths = 0;
 
 static int flag_counts = 0;
 
+/* Return code of the tool invocation.  */
+static int return_code = 0;
+
 /* Forward declarations.  */
 static int process_args (int, char **);
 static void print_usage (int) ATTRIBUTE_NORETURN;
@@ -662,8 +665,8 @@ static void accumulate_line_counts (source_info *);
 static void output_gcov_file (const char *, source_info *);
 static int output_branch_count (FILE *, int, const arc_info *);
 static void output_lines (FILE *, const source_info *);
-static char *make_gcov_file_name (const char *, const char *);
-static char *mangle_name (const char *, char *);
+static string make_gcov_file_name (const char *, const char *);
+static char *mangle_name (const char *);
 static void release_structures (void);
 extern int main (int, char **);
 
@@ -843,7 +846,6 @@ get_cycles_count (line_info &linfo)
      Therefore, operating on a permuted order (i.e., non-sorted) only
      has the effect of permuting the output cycles.  */
 
-  bool loop_found = false;
   gcov_type count = 0;
   for (vector<block_info *>::iterator it = linfo.blocks.begin ();
        it != linfo.blocks.end (); it++)
@@ -851,8 +853,7 @@ get_cycles_count (line_info &linfo)
       arc_vector_t path;
       block_vector_t blocked;
       vector<block_vector_t > block_lists;
-      loop_found |= circuit (*it, path, *it, blocked, block_lists, linfo,
-			     count);
+      circuit (*it, path, *it, blocked, block_lists, linfo, count);
     }
 
   return count;
@@ -909,7 +910,7 @@ main (int argc, char **argv)
   if (!flag_use_stdout)
     executed_summary (total_lines, total_executed);
 
-  return 0;
+  return return_code;
 }
 
 /* Print a usage message and exit.  If ERROR_P is nonzero, this is an error,
@@ -1134,6 +1135,41 @@ output_intermediate_json_line (json::array *object,
   object->append (lineo);
 }
 
+/* Strip filename extension in STR.  */
+
+static string
+strip_extention (string str)
+{
+  string::size_type pos = str.rfind ('.');
+  if (pos != string::npos)
+    str = str.substr (0, pos);
+
+  return str;
+}
+
+/* Calcualte md5sum for INPUT string and return it in hex string format.  */
+
+static string
+get_md5sum (const char *input)
+{
+  md5_ctx ctx;
+  char md5sum[16];
+  string str;
+
+  md5_init_ctx (&ctx);
+  md5_process_bytes (input, strlen (input), &ctx);
+  md5_finish_ctx (&ctx, md5sum);
+
+  for (unsigned i = 0; i < 16; i++)
+    {
+      char b[3];
+      sprintf (b, "%02x", (unsigned char)md5sum[i]);
+      str += b;
+    }
+
+  return str;
+}
+
 /* Get the name of the gcov file.  The return value must be free'd.
 
    It appends the '.gcov' extension to the *basename* of the file.
@@ -1143,20 +1179,26 @@ output_intermediate_json_line (json::array *object,
    input: foo.da,       output: foo.da.gcov
    input: a/b/foo.cc,   output: foo.cc.gcov  */
 
-static char *
-get_gcov_intermediate_filename (const char *file_name)
+static string
+get_gcov_intermediate_filename (const char *input_file_name)
 {
-  const char *gcov = ".gcov.json.gz";
-  char *result;
-  const char *cptr;
+  string base = basename (input_file_name);
+  string str = strip_extention (base);
 
-  /* Find the 'basename'.  */
-  cptr = lbasename (file_name);
+  if (flag_hash_filenames)
+    {
+      str += "##";
+      str += get_md5sum (input_file_name);
+    }
+  else if (flag_preserve_paths && base != input_file_name)
+    {
+      str += "##";
+      str += mangle_path (input_file_name);
+      str = strip_extention (str);
+    }
 
-  result = XNEWVEC (char, strlen (cptr) + strlen (gcov) + 1);
-  sprintf (result, "%s%s", cptr, gcov);
-
-  return result;
+  str += ".gcov.json.gz";
+  return str.c_str ();
 }
 
 /* Output the result in JSON intermediate format.
@@ -1416,7 +1458,9 @@ process_all_functions (void)
 static void
 output_gcov_file (const char *file_name, source_info *src)
 {
-  char *gcov_file_name = make_gcov_file_name (file_name, src->coverage.name);
+  string gcov_file_name_str
+    = make_gcov_file_name (file_name, src->coverage.name);
+  const char *gcov_file_name = gcov_file_name_str.c_str ();
 
   if (src->coverage.lines)
     {
@@ -1426,25 +1470,30 @@ output_gcov_file (const char *file_name, source_info *src)
 	  fnotice (stdout, "Creating '%s'\n", gcov_file_name);
 	  output_lines (gcov_file, src);
 	  if (ferror (gcov_file))
-	    fnotice (stderr, "Error writing output file '%s'\n",
-		     gcov_file_name);
+	    {
+	      fnotice (stderr, "Error writing output file '%s'\n",
+		       gcov_file_name);
+	      return_code = 6;
+	    }
 	  fclose (gcov_file);
 	}
       else
-	fnotice (stderr, "Could not open output file '%s'\n", gcov_file_name);
+	{
+	  fnotice (stderr, "Could not open output file '%s'\n", gcov_file_name);
+	  return_code = 6;
+	}
     }
   else
     {
       unlink (gcov_file_name);
       fnotice (stdout, "Removing '%s'\n", gcov_file_name);
     }
-  free (gcov_file_name);
 }
 
 static void
 generate_results (const char *file_name)
 {
-  char *gcov_intermediate_filename;
+  string gcov_intermediate_filename;
 
   for (vector<function_info *>::iterator it = functions.begin ();
        it != functions.end (); it++)
@@ -1547,11 +1596,14 @@ generate_results (const char *file_name)
 	  root->print (&pp);
 	  pp_formatted_text (&pp);
 
-	  gzFile output = gzopen (gcov_intermediate_filename, "w");
+	  fnotice (stdout, "Creating '%s'\n",
+		   gcov_intermediate_filename.c_str ());
+	  gzFile output = gzopen (gcov_intermediate_filename.c_str (), "w");
 	  if (output == NULL)
 	    {
 	      fnotice (stderr, "Cannot open JSON output file %s\n",
-		       gcov_intermediate_filename);
+		       gcov_intermediate_filename.c_str ());
+	      return_code = 6;
 	      return;
 	    }
 
@@ -1559,7 +1611,8 @@ generate_results (const char *file_name)
 	      || gzclose (output))
 	    {
 	      fnotice (stderr, "Error writing JSON output file %s\n",
-		       gcov_intermediate_filename);
+		       gcov_intermediate_filename.c_str ());
+	      return_code = 6;
 	      return;
 	    }
 	}
@@ -1748,12 +1801,14 @@ read_graph_file (void)
   if (!gcov_open (bbg_file_name, 1))
     {
       fnotice (stderr, "%s:cannot open notes file\n", bbg_file_name);
+      return_code = 1;
       return;
     }
   bbg_file_time = gcov_time ();
   if (!gcov_magic (gcov_read_unsigned (), GCOV_NOTE_MAGIC))
     {
       fnotice (stderr, "%s:not a gcov notes file\n", bbg_file_name);
+      return_code = 2;
       gcov_close ();
       return;
     }
@@ -1768,8 +1823,11 @@ read_graph_file (void)
 
       fnotice (stderr, "%s:version '%.4s', prefer '%.4s'\n",
 	       bbg_file_name, v, e);
+      return_code = 3;
     }
   bbg_stamp = gcov_read_unsigned ();
+  /* Read checksum.  */
+  gcov_read_unsigned ();
   bbg_cwd = xstrdup (gcov_read_string ());
   bbg_supports_has_unexecuted_blocks = gcov_read_unsigned ();
 
@@ -1933,6 +1991,7 @@ read_graph_file (void)
 	{
 	corrupt:;
 	  fnotice (stderr, "%s:corrupted\n", bbg_file_name);
+	  return_code = 4;
 	  break;
 	}
     }
@@ -1965,6 +2024,7 @@ read_count_file (void)
   if (!gcov_magic (gcov_read_unsigned (), GCOV_DATA_MAGIC))
     {
       fnotice (stderr, "%s:not a gcov data file\n", da_file_name);
+      return_code = 2;
     cleanup:;
       gcov_close ();
       return 1;
@@ -1979,13 +2039,18 @@ read_count_file (void)
 
       fnotice (stderr, "%s:version '%.4s', prefer version '%.4s'\n",
 	       da_file_name, v, e);
+      return_code = 3;
     }
   tag = gcov_read_unsigned ();
   if (tag != bbg_stamp)
     {
       fnotice (stderr, "%s:stamp mismatch with notes file\n", da_file_name);
+      return_code = 5;
       goto cleanup;
     }
+
+  /* Read checksum.  */
+  gcov_read_unsigned ();
 
   while ((tag = gcov_read_unsigned ()))
     {
@@ -2041,6 +2106,7 @@ read_count_file (void)
 		   ? N_("%s:overflowed\n")
 		   : N_("%s:corrupted\n"),
 		   da_file_name);
+	  return_code = 4;
 	  goto cleanup;
 	}
     }
@@ -2546,15 +2612,6 @@ canonicalize_name (const char *name)
   return result;
 }
 
-/* Print hex representation of 16 bytes from SUM and write it to BUFFER.  */
-
-static void
-md5sum_to_hex (const char *sum, char *buffer)
-{
-  for (unsigned i = 0; i < 16; i++)
-    sprintf (buffer + (2 * i), "%02x", (unsigned char)sum[i]);
-}
-
 /* Generate an output file name. INPUT_NAME is the canonicalized main
    input file and SRC_NAME is the canonicalized file name.
    LONG_OUTPUT_NAMES and PRESERVE_PATHS affect name generation.  With
@@ -2567,77 +2624,42 @@ md5sum_to_hex (const char *sum, char *buffer)
    component.  (Remember, the canonicalized name will already have
    elided '.' components and converted \\ separators.)  */
 
-static char *
+static string
 make_gcov_file_name (const char *input_name, const char *src_name)
 {
-  char *ptr;
-  char *result;
-
-  if (flag_long_names && input_name && strcmp (src_name, input_name))
-    {
-      /* Generate the input filename part.  */
-      result = XNEWVEC (char, strlen (input_name) + strlen (src_name) + 10);
-
-      ptr = result;
-      ptr = mangle_name (input_name, ptr);
-      ptr[0] = ptr[1] = '#';
-      ptr += 2;
-    }
-  else
-    {
-      result = XNEWVEC (char, strlen (src_name) + 10);
-      ptr = result;
-    }
-
-  ptr = mangle_name (src_name, ptr);
-  strcpy (ptr, ".gcov");
+  string str;
 
   /* When hashing filenames, we shorten them by only using the filename
      component and appending a hash of the full (mangled) pathname.  */
   if (flag_hash_filenames)
+    str = (string (mangle_name (src_name)) + "##"
+	   + get_md5sum (src_name) + ".gcov");
+  else
     {
-      md5_ctx ctx;
-      char md5sum[16];
-      char md5sum_hex[33];
+      if (flag_long_names && input_name && strcmp (src_name, input_name) != 0)
+	{
+	  str += mangle_name (input_name);
+	  str += "##";
+	}
 
-      md5_init_ctx (&ctx);
-      md5_process_bytes (src_name, strlen (src_name), &ctx);
-      md5_finish_ctx (&ctx, md5sum);
-      md5sum_to_hex (md5sum, md5sum_hex);
-      free (result);
-
-      result = XNEWVEC (char, strlen (src_name) + 50);
-      ptr = result;
-      ptr = mangle_name (src_name, ptr);
-      ptr[0] = ptr[1] = '#';
-      ptr += 2;
-      memcpy (ptr, md5sum_hex, 32);
-      ptr += 32;
-      strcpy (ptr, ".gcov");
+      str += mangle_name (src_name);
+      str += ".gcov";
     }
 
-  return result;
+  return str;
 }
 
 /* Mangle BASE name, copy it at the beginning of PTR buffer and
    return address of the \0 character of the buffer.  */
 
 static char *
-mangle_name (char const *base, char *ptr)
+mangle_name (char const *base)
 {
-  size_t len;
-
   /* Generate the source filename part.  */
   if (!flag_preserve_paths)
-    base = lbasename (base);
+    return xstrdup (lbasename (base));
   else
-    base = mangle_path (base);
-
-  len = strlen (base);
-  memcpy (ptr, base, len);
-  ptr += len;
-
-  return ptr;
+    return mangle_path (base);
 }
 
 /* Scan through the bb_data for each line in the block, increment
@@ -2890,7 +2912,6 @@ read_line (FILE *file)
   static char *string;
   static size_t string_len;
   size_t pos = 0;
-  char *ptr;
 
   if (!string_len)
     {
@@ -2898,7 +2919,7 @@ read_line (FILE *file)
       string = XNEWVEC (char, string_len);
     }
 
-  while ((ptr = fgets (string + pos, string_len - pos, file)))
+  while (fgets (string + pos, string_len - pos, file))
     {
       size_t len = strlen (string + pos);
 

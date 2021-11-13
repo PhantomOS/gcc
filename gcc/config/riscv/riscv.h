@@ -98,6 +98,7 @@ extern const char *riscv_default_mtune (int argc, const char **argv);
 %{" FPIE_OR_FPIC_SPEC ":-fpic} \
 %{march=*} \
 %{mabi=*} \
+%{mno-relax} \
 %{mbig-endian} \
 %{mlittle-endian} \
 %(subtarget_asm_spec)" \
@@ -524,6 +525,14 @@ enum reg_class
 #define LUI_OPERAND(VALUE)						\
   (((VALUE) | ((1UL<<31) - IMM_REACH)) == ((1UL<<31) - IMM_REACH)	\
    || ((VALUE) | ((1UL<<31) - IMM_REACH)) + IMM_REACH == 0)
+
+/* If this is a single bit mask, then we can load it with bseti.  But this
+   is not useful for any of the low 31 bits because we can use addi or lui
+   to load them.  It is wrong for loading SImode 0x80000000 on rv64 because it
+   needs to be sign-extended.  So we restrict this to the upper 32-bits
+   only.  */
+#define SINGLE_BIT_MASK_OPERAND(VALUE) \
+  (pow2p_hwi (VALUE) && (ctz_hwi (VALUE) >= 32))
 
 /* Stack layout; function entry, exit and calling.  */
 

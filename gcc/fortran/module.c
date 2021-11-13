@@ -2088,6 +2088,7 @@ enum ab_attribute
   AB_PDT_TEMPLATE, AB_PDT_ARRAY, AB_PDT_STRING,
   AB_OACC_ROUTINE_LOP_GANG, AB_OACC_ROUTINE_LOP_WORKER,
   AB_OACC_ROUTINE_LOP_VECTOR, AB_OACC_ROUTINE_LOP_SEQ,
+  AB_OACC_ROUTINE_NOHOST,
   AB_OMP_REQ_REVERSE_OFFLOAD, AB_OMP_REQ_UNIFIED_ADDRESS,
   AB_OMP_REQ_UNIFIED_SHARED_MEMORY, AB_OMP_REQ_DYNAMIC_ALLOCATORS,
   AB_OMP_REQ_MEM_ORDER_SEQ_CST, AB_OMP_REQ_MEM_ORDER_ACQ_REL,
@@ -2166,6 +2167,7 @@ static const mstring attr_bits[] =
     minit ("OACC_ROUTINE_LOP_WORKER", AB_OACC_ROUTINE_LOP_WORKER),
     minit ("OACC_ROUTINE_LOP_VECTOR", AB_OACC_ROUTINE_LOP_VECTOR),
     minit ("OACC_ROUTINE_LOP_SEQ", AB_OACC_ROUTINE_LOP_SEQ),
+    minit ("OACC_ROUTINE_NOHOST", AB_OACC_ROUTINE_NOHOST),
     minit ("OMP_REQ_REVERSE_OFFLOAD", AB_OMP_REQ_REVERSE_OFFLOAD),
     minit ("OMP_REQ_UNIFIED_ADDRESS", AB_OMP_REQ_UNIFIED_ADDRESS),
     minit ("OMP_REQ_UNIFIED_SHARED_MEMORY", AB_OMP_REQ_UNIFIED_SHARED_MEMORY),
@@ -2420,6 +2422,8 @@ mio_symbol_attribute (symbol_attribute *attr)
 	default:
 	  gcc_unreachable ();
 	}
+      if (attr->oacc_routine_nohost)
+	MIO_NAME (ab_attribute) (AB_OACC_ROUTINE_NOHOST, attr_bits);
 
       if (attr->flavor == FL_MODULE && gfc_current_ns->omp_requires)
 	{
@@ -2681,6 +2685,9 @@ mio_symbol_attribute (symbol_attribute *attr)
 	    case AB_OACC_ROUTINE_LOP_SEQ:
 	      verify_OACC_ROUTINE_LOP_NONE (attr->oacc_routine_lop);
 	      attr->oacc_routine_lop = OACC_ROUTINE_LOP_SEQ;
+	      break;
+	    case AB_OACC_ROUTINE_NOHOST:
+	      attr->oacc_routine_nohost = 1;
 	      break;
 	    case AB_OMP_REQ_REVERSE_OFFLOAD:
 	      gfc_omp_requires_add_clause (OMP_REQ_REVERSE_OFFLOAD,
@@ -5585,6 +5592,9 @@ read_module (void)
 
   for (i = GFC_INTRINSIC_BEGIN; i != GFC_INTRINSIC_END; i++)
     {
+      gfc_use_rename *u = NULL, *v = NULL;
+      int j = i;
+
       if (i == INTRINSIC_USER)
 	continue;
 
@@ -5592,18 +5602,73 @@ read_module (void)
 	{
 	  u = find_use_operator ((gfc_intrinsic_op) i);
 
-	  if (u == NULL)
+	  /* F2018:10.1.5.5.1 requires same interpretation of old and new-style
+	     relational operators.  Special handling for USE, ONLY.  */
+	  switch (i)
+	    {
+	    case INTRINSIC_EQ:
+	      j = INTRINSIC_EQ_OS;
+	      break;
+	    case INTRINSIC_EQ_OS:
+	      j = INTRINSIC_EQ;
+	      break;
+	    case INTRINSIC_NE:
+	      j = INTRINSIC_NE_OS;
+	      break;
+	    case INTRINSIC_NE_OS:
+	      j = INTRINSIC_NE;
+	      break;
+	    case INTRINSIC_GT:
+	      j = INTRINSIC_GT_OS;
+	      break;
+	    case INTRINSIC_GT_OS:
+	      j = INTRINSIC_GT;
+	      break;
+	    case INTRINSIC_GE:
+	      j = INTRINSIC_GE_OS;
+	      break;
+	    case INTRINSIC_GE_OS:
+	      j = INTRINSIC_GE;
+	      break;
+	    case INTRINSIC_LT:
+	      j = INTRINSIC_LT_OS;
+	      break;
+	    case INTRINSIC_LT_OS:
+	      j = INTRINSIC_LT;
+	      break;
+	    case INTRINSIC_LE:
+	      j = INTRINSIC_LE_OS;
+	      break;
+	    case INTRINSIC_LE_OS:
+	      j = INTRINSIC_LE;
+	      break;
+	    default:
+	      break;
+	    }
+
+	  if (j != i)
+	    v = find_use_operator ((gfc_intrinsic_op) j);
+
+	  if (u == NULL && v == NULL)
 	    {
 	      skip_list ();
 	      continue;
 	    }
 
-	  u->found = 1;
+	  if (u)
+	    u->found = 1;
+	  if (v)
+	    v->found = 1;
 	}
 
       mio_interface (&gfc_current_ns->op[i]);
-      if (u && !gfc_current_ns->op[i])
-	u->found = 0;
+      if (!gfc_current_ns->op[i] && !gfc_current_ns->op[j])
+	{
+	  if (u)
+	    u->found = 0;
+	  if (v)
+	    v->found = 0;
+	}
     }
 
   mio_rparen ();

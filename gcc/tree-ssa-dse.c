@@ -813,15 +813,11 @@ dse_classify_store (ao_ref *ref, gimple *stmt,
 	      break;
 	    }
 
-	  /* We have visited ourselves already so ignore STMT for the
-	     purpose of chaining.  */
-	  if (use_stmt == stmt)
-	    ;
 	  /* In simple cases we can look through PHI nodes, but we
 	     have to be careful with loops and with memory references
 	     containing operands that are also operands of PHI nodes.
 	     See gcc.c-torture/execute/20051110-*.c.  */
-	  else if (gimple_code (use_stmt) == GIMPLE_PHI)
+	  if (gimple_code (use_stmt) == GIMPLE_PHI)
 	    {
 	      /* If we already visited this PHI ignore it for further
 		 processing.  */
@@ -861,6 +857,10 @@ dse_classify_store (ao_ref *ref, gimple *stmt,
 	      fail = true;
 	      break;
 	    }
+	  /* We have visited ourselves already so ignore STMT for the
+	     purpose of chaining.  */
+	  else if (use_stmt == stmt)
+	    ;
 	  /* If this is a store, remember it as we possibly need to walk the
 	     defs uses.  */
 	  else if (gimple_vdef (use_stmt))
@@ -978,6 +978,7 @@ delete_dead_or_redundant_call (gimple_stmt_iterator *gsi, const char *type)
       fprintf (dump_file, "\n");
     }
 
+  basic_block bb = gimple_bb (stmt);
   tree lhs = gimple_call_lhs (stmt);
   if (lhs)
     {
@@ -985,7 +986,7 @@ delete_dead_or_redundant_call (gimple_stmt_iterator *gsi, const char *type)
       gimple *new_stmt = gimple_build_assign (lhs, ptr);
       unlink_stmt_vdef (stmt);
       if (gsi_replace (gsi, new_stmt, true))
-        bitmap_set_bit (need_eh_cleanup, gimple_bb (stmt)->index);
+	bitmap_set_bit (need_eh_cleanup, bb->index);
     }
   else
     {
@@ -994,7 +995,7 @@ delete_dead_or_redundant_call (gimple_stmt_iterator *gsi, const char *type)
 
       /* Remove the dead store.  */
       if (gsi_remove (gsi, true))
-	bitmap_set_bit (need_eh_cleanup, gimple_bb (stmt)->index);
+	bitmap_set_bit (need_eh_cleanup, bb->index);
       release_defs (stmt);
     }
 }

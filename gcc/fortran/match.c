@@ -530,32 +530,6 @@ gfc_match_small_int (int *value)
 }
 
 
-/* This function is the same as the gfc_match_small_int, except that
-   we're keeping the pointer to the expr.  This function could just be
-   removed and the previously mentioned one modified, though all calls
-   to it would have to be modified then (and there were a number of
-   them).  Return MATCH_ERROR if fail to extract the int; otherwise,
-   return the result of gfc_match_expr().  The expr (if any) that was
-   matched is returned in the parameter expr.  */
-
-match
-gfc_match_small_int_expr (int *value, gfc_expr **expr)
-{
-  match m;
-  int i;
-
-  m = gfc_match_expr (expr);
-  if (m != MATCH_YES)
-    return m;
-
-  if (gfc_extract_int (*expr, &i, 1))
-    m = MATCH_ERROR;
-
-  *value = i;
-  return m;
-}
-
-
 /* Matches a statement label.  Uses gfc_match_small_literal_int() to
    do most of the work.  */
 
@@ -599,7 +573,7 @@ cleanup:
    it.  We also make sure the symbol does not refer to another
    (active) block.  A matched label is pointed to by gfc_new_block.  */
 
-match
+static match
 gfc_match_label (void)
 {
   char name[GFC_MAX_SYMBOL_LEN + 1];
@@ -1109,7 +1083,8 @@ gfc_match_char (char c)
    %t  Matches end of statement.
    %o  Matches an intrinsic operator, returned as an INTRINSIC enum.
    %l  Matches a statement label
-   %v  Matches a variable expression (an lvalue)
+   %v  Matches a variable expression (an lvalue, except function references
+   having a data pointer result)
    %   Matches a required space (in free form) and optional spaces.  */
 
 match
@@ -1409,7 +1384,7 @@ gfc_match_pointer_assignment (void)
   gfc_matching_procptr_assignment = 0;
 
   m = gfc_match (" %v =>", &lvalue);
-  if (m != MATCH_YES)
+  if (m != MATCH_YES || !lvalue->symtree)
     {
       m = MATCH_NO;
       goto cleanup;
@@ -3854,7 +3829,7 @@ sync_statement (gfc_statement st)
 
   for (;;)
     {
-      m = gfc_match (" stat = %v", &tmp);
+      m = gfc_match (" stat = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto syntax;
       if (m == MATCH_YES)
@@ -3874,7 +3849,7 @@ sync_statement (gfc_statement st)
 	  break;
 	}
 
-      m = gfc_match (" errmsg = %v", &tmp);
+      m = gfc_match (" errmsg = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto syntax;
       if (m == MATCH_YES)
@@ -4078,7 +4053,7 @@ gfc_match_goto (void)
 	}
       while (gfc_match_char (',') == MATCH_YES);
 
-      if (gfc_match (")%t") != MATCH_YES)
+      if (gfc_match (" )%t") != MATCH_YES)
 	goto syntax;
 
       if (head == NULL)
@@ -4405,7 +4380,7 @@ gfc_match_allocate (void)
 
 alloc_opt_list:
 
-      m = gfc_match (" stat = %v", &tmp);
+      m = gfc_match (" stat = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto cleanup;
       if (m == MATCH_YES)
@@ -4434,7 +4409,7 @@ alloc_opt_list:
 	    goto alloc_opt_list;
 	}
 
-      m = gfc_match (" errmsg = %v", &tmp);
+      m = gfc_match (" errmsg = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto cleanup;
       if (m == MATCH_YES)
@@ -4777,7 +4752,7 @@ gfc_match_deallocate (void)
 
 dealloc_opt_list:
 
-      m = gfc_match (" stat = %v", &tmp);
+      m = gfc_match (" stat = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto cleanup;
       if (m == MATCH_YES)
@@ -4799,7 +4774,7 @@ dealloc_opt_list:
 	    goto dealloc_opt_list;
 	}
 
-      m = gfc_match (" errmsg = %v", &tmp);
+      m = gfc_match (" errmsg = %e", &tmp);
       if (m == MATCH_ERROR)
 	goto cleanup;
       if (m == MATCH_YES)
@@ -5313,6 +5288,13 @@ gfc_match_common (void)
 		  goto cleanup;
 		}
 
+	      if (as->corank)
+		{
+		  gfc_error ("Symbol %qs in COMMON at %C cannot be a "
+			     "coarray", sym->name);
+		  goto cleanup;
+		}
+
 	      if (!gfc_add_dimension (&sym->attr, sym->name, NULL))
 		goto cleanup;
 
@@ -5470,20 +5452,22 @@ gfc_free_namelist (gfc_namelist *name)
 /* Free an OpenMP namelist structure.  */
 
 void
-gfc_free_omp_namelist (gfc_omp_namelist *name)
+gfc_free_omp_namelist (gfc_omp_namelist *name, bool free_ns)
 {
   gfc_omp_namelist *n;
 
   for (; name; name = n)
     {
       gfc_free_expr (name->expr);
-      if (name->udr)
+      if (free_ns)
+	gfc_free_namespace (name->u2.ns);
+      else if (name->u2.udr)
 	{
-	  if (name->udr->combiner)
-	    gfc_free_statement (name->udr->combiner);
-	  if (name->udr->initializer)
-	    gfc_free_statement (name->udr->initializer);
-	  free (name->udr);
+	  if (name->u2.udr->combiner)
+	    gfc_free_statement (name->u2.udr->combiner);
+	  if (name->u2.udr->initializer)
+	    gfc_free_statement (name->u2.udr->initializer);
+	  free (name->u2.udr);
 	}
       n = name->next;
       free (name);

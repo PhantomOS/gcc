@@ -1065,16 +1065,12 @@ package body Sprint is
                if Present (Expressions (Node)) then
                   Sprint_Comma_List (Expressions (Node));
 
-                  if Present (Component_Associations (Node))
-                    and then not Is_Empty_List (Component_Associations (Node))
-                  then
+                  if not Is_Empty_List (Component_Associations (Node)) then
                      Write_Str (", ");
                   end if;
                end if;
 
-               if Present (Component_Associations (Node))
-                 and then not Is_Empty_List (Component_Associations (Node))
-               then
+               if not Is_Empty_List (Component_Associations (Node)) then
                   Indent_Begin;
 
                   declare
@@ -1117,6 +1113,12 @@ package body Sprint is
             if Present (Storage_Pool (Node)) then
                Write_Str_With_Col_Check ("[storage_pool = ");
                Sprint_Node (Storage_Pool (Node));
+               Write_Char (']');
+            end if;
+
+            if Present (Procedure_To_Call (Node)) then
+               Write_Str_With_Col_Check ("[procedure_to_call = ");
+               Sprint_Node (Procedure_To_Call (Node));
                Write_Char (']');
             end if;
 
@@ -1789,10 +1791,22 @@ package body Sprint is
             if Present (Handled_Statement_Sequence (Node)) then
                Write_Str_With_Col_Check (" do");
                Sprint_Node (Handled_Statement_Sequence (Node));
-               Write_Indent_Str ("end return;");
-            else
-               Write_Indent_Str (";");
+               Write_Indent_Str ("end return");
             end if;
+
+            if Present (Storage_Pool (Node)) then
+               Write_Str_With_Col_Check ("[storage_pool = ");
+               Sprint_Node (Storage_Pool (Node));
+               Write_Char (']');
+            end if;
+
+            if Present (Procedure_To_Call (Node)) then
+               Write_Str_With_Col_Check ("[procedure_to_call = ");
+               Sprint_Node (Procedure_To_Call (Node));
+               Write_Char (']');
+            end if;
+
+            Write_Char (';');
 
          when N_Delta_Aggregate =>
             Write_Str_With_Col_Check_Sloc ("(");
@@ -1977,6 +1991,19 @@ package body Sprint is
          when N_Free_Statement =>
             Write_Indent_Str_Sloc ("free ");
             Sprint_Node (Expression (Node));
+
+            if Present (Storage_Pool (Node)) then
+               Write_Str_With_Col_Check ("[storage_pool = ");
+               Sprint_Node (Storage_Pool (Node));
+               Write_Char (']');
+            end if;
+
+            if Present (Procedure_To_Call (Node)) then
+               Write_Str_With_Col_Check ("[procedure_to_call = ");
+               Sprint_Node (Procedure_To_Call (Node));
+               Write_Char (']');
+            end if;
+
             Write_Char (';');
 
          when N_Freeze_Entity =>
@@ -2079,7 +2106,7 @@ package body Sprint is
             Sprint_Node (Name (Node));
             Write_Char (';');
 
-         when N_Generic_Package_Declaration =>
+         when N_Generic_Declaration =>
             Extra_Blank_Line;
             Write_Indent_Str_Sloc ("generic ");
             Sprint_Indented_List (Generic_Formal_Declarations (Node));
@@ -2101,14 +2128,6 @@ package body Sprint is
             Sprint_Node (Name (Node));
             Write_Char (';');
 
-         when N_Generic_Subprogram_Declaration =>
-            Extra_Blank_Line;
-            Write_Indent_Str_Sloc ("generic ");
-            Sprint_Indented_List (Generic_Formal_Declarations (Node));
-            Write_Indent;
-            Sprint_Node (Specification (Node));
-            Write_Char (';');
-
          when N_Goto_Statement =>
             Write_Indent_Str_Sloc ("goto ");
             Sprint_Node (Name (Node));
@@ -2117,6 +2136,13 @@ package body Sprint is
             if Nkind (Next (Node)) = N_Label then
                Write_Indent;
             end if;
+
+         when N_Goto_When_Statement =>
+            Write_Indent_Str_Sloc ("goto ");
+            Sprint_Node (Name (Node));
+            Write_Str (" when ");
+            Sprint_Node (Condition (Node));
+            Write_Char (';');
 
          when N_Handled_Sequence_Of_Statements =>
             Set_Debug_Sloc;
@@ -2493,7 +2519,7 @@ package body Sprint is
 
             --  AI12-0275: Object_Renaming_Declaration without explicit subtype
 
-            elsif Ada_Version >= Ada_2020 then
+            elsif Ada_Version >= Ada_2022 then
                null;
 
             else
@@ -3069,10 +3095,29 @@ package body Sprint is
 
             Write_Char (';');
 
+         when N_Raise_When_Statement =>
+            Write_Indent_Str_Sloc ("raise ");
+            Sprint_Node (Name (Node));
+            Write_Str (" when ");
+            Sprint_Node (Condition (Node));
+
+            if Present (Expression (Node)) then
+               Write_Str_With_Col_Check_Sloc (" with ");
+               Sprint_Node (Expression (Node));
+            end if;
+
+            Write_Char (';');
+
          when N_Range =>
             Sprint_Node (Low_Bound (Node));
             Write_Str_Sloc (" .. ");
-            Sprint_Node (High_Bound (Node));
+            if Present (Etype (Node))
+              and then Is_Fixed_Lower_Bound_Index_Subtype (Etype (Node))
+            then
+               Write_Str ("<>");
+            else
+               Sprint_Node (High_Bound (Node));
+            end if;
             Update_Itype (Node);
 
          when N_Range_Constraint =>
@@ -3136,6 +3181,13 @@ package body Sprint is
 
             Write_Char (';');
 
+         when N_Return_When_Statement =>
+            Write_Indent_Str_Sloc ("return ");
+            Sprint_Node (Expression (Node));
+            Write_Str (" when ");
+            Sprint_Node (Condition (Node));
+            Write_Char (';');
+
          when N_SCIL_Dispatch_Table_Tag_Init =>
             Write_Indent_Str ("[N_SCIL_Dispatch_Table_Tag_Init]");
 
@@ -3149,10 +3201,23 @@ package body Sprint is
             if Present (Expression (Node)) then
                Write_Indent_Str_Sloc ("return ");
                Sprint_Node (Expression (Node));
-               Write_Char (';');
             else
-               Write_Indent_Str_Sloc ("return;");
+               Write_Indent_Str_Sloc ("return");
             end if;
+
+            if Present (Storage_Pool (Node)) then
+               Write_Str_With_Col_Check ("[storage_pool = ");
+               Sprint_Node (Storage_Pool (Node));
+               Write_Char (']');
+            end if;
+
+            if Present (Procedure_To_Call (Node)) then
+               Write_Str_With_Col_Check ("[procedure_to_call = ");
+               Sprint_Node (Procedure_To_Call (Node));
+               Write_Char (']');
+            end if;
+
+            Write_Char (';');
 
          when N_Selective_Accept =>
             Write_Indent_Str_Sloc ("select");
@@ -4193,7 +4258,7 @@ package body Sprint is
          --  Itype to be printed
 
          declare
-            B : constant Node_Id := Etype (Typ);
+            B : constant Entity_Id := Etype (Typ);
             P : constant Node_Id := Parent (Typ);
             S : constant Saved_Output_Buffer := Save_Output_Buffer;
             --  Save current output buffer
@@ -4373,7 +4438,12 @@ package body Sprint is
                   when E_Modular_Integer_Type =>
                      Write_Header;
                      Write_Str ("mod ");
-                     Write_Uint_With_Col_Check (Modulus (Typ), Auto);
+
+                     if No (Modulus (Typ)) then
+                        Write_Uint_With_Col_Check (Uint_0, Auto);
+                     else
+                        Write_Uint_With_Col_Check (Modulus (Typ), Auto);
+                     end if;
 
                   --  Floating-point types and subtypes
 
@@ -4841,7 +4911,10 @@ package body Sprint is
          Write_Int (Int (L));
          Write_Str (": ");
 
-         while Src (Loc) not in Line_Terminator loop
+         --  We need to check for EOF here, in case the last line of the source
+         --  file does not have a Line_Terminator.
+
+         while Src (Loc) not in Line_Terminator | EOF loop
             Write_Char (Src (Loc));
             Loc := Loc + 1;
          end loop;

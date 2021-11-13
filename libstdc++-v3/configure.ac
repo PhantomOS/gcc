@@ -273,6 +273,7 @@ if $GLIBCXX_IS_NATIVE; then
   AC_CHECK_FUNCS(__cxa_thread_atexit_impl __cxa_thread_atexit)
   AC_CHECK_FUNCS(aligned_alloc posix_memalign memalign _aligned_malloc)
   AC_CHECK_FUNCS(_wfopen)
+  AC_CHECK_FUNCS(secure_getenv)
 
   # C11 functions for C++17 library
   AC_CHECK_FUNCS(timespec_get)
@@ -467,6 +468,10 @@ GLIBCXX_CHECK_X86_RDRAND
 # Check if assembler supports rdseed opcode.
 GLIBCXX_CHECK_X86_RDSEED
 
+# Check for other random number APIs
+GLIBCXX_CHECK_GETENTROPY
+GLIBCXX_CHECK_ARC4RANDOM
+
 # This depends on GLIBCXX_ENABLE_SYMVERS and GLIBCXX_IS_NATIVE.
 GLIBCXX_CONFIGURE_TESTSUITE
 
@@ -480,6 +485,11 @@ GLIBCXX_CHECK_FILESYSTEM_DEPS
 
 # For Networking TS.
 AC_CHECK_HEADERS([fcntl.h sys/ioctl.h sys/socket.h sys/uio.h poll.h netdb.h arpa/inet.h netinet/in.h netinet/tcp.h])
+AC_CHECK_DECL(F_GETFL,,,[#include <fcntl.h>])
+AC_CHECK_DECL(F_SETFL,,,[#include <fcntl.h>])
+if test "$ac_cv_have_decl_F_GETFL$ac_cv_have_decl_F_SETFL" = yesyes ; then
+  AC_CHECK_DECL(O_NONBLOCK,,,[#include <fcntl.h>])
+fi
 
 # For Transactional Memory TS
 GLIBCXX_CHECK_SIZE_T_MANGLING

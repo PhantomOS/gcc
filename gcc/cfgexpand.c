@@ -2294,22 +2294,19 @@ expand_used_vars (bitmap forced_stack_vars)
 	if (gen_stack_protect_signal
 	    || cfun->calls_alloca
 	    || has_protected_decls
-	    || lookup_attribute ("stack_protect",
-				 DECL_ATTRIBUTES (current_function_decl)))
+	    || lookup_attribute ("stack_protect", attribs))
 	  create_stack_guard ();
 	break;
 
       case SPCT_FLAG_DEFAULT:
 	if (cfun->calls_alloca
 	    || has_protected_decls
-	    || lookup_attribute ("stack_protect",
-				 DECL_ATTRIBUTES (current_function_decl)))
+	    || lookup_attribute ("stack_protect", attribs))
 	  create_stack_guard ();
 	break;
 
       case SPCT_FLAG_EXPLICIT:
-	if (lookup_attribute ("stack_protect",
-			      DECL_ATTRIBUTES (current_function_decl)))
+	if (lookup_attribute ("stack_protect", attribs))
 	  create_stack_guard ();
 	break;
 
@@ -2807,9 +2804,6 @@ expand_call_stmt (gcall *stmt)
   if (gimple_call_nothrow_p (stmt))
     TREE_NOTHROW (exp) = 1;
 
-  if (gimple_no_warning_p (stmt))
-    TREE_NO_WARNING (exp) = 1;
-
   CALL_EXPR_TAILCALL (exp) = gimple_call_tail_p (stmt);
   CALL_EXPR_MUST_TAIL_CALL (exp) = gimple_call_must_tail_p (stmt);
   CALL_EXPR_RETURN_SLOT_OPT (exp) = gimple_call_return_slot_opt_p (stmt);
@@ -2822,6 +2816,9 @@ expand_call_stmt (gcall *stmt)
   CALL_EXPR_VA_ARG_PACK (exp) = gimple_call_va_arg_pack_p (stmt);
   CALL_EXPR_BY_DESCRIPTOR (exp) = gimple_call_by_descriptor_p (stmt);
   SET_EXPR_LOCATION (exp, gimple_location (stmt));
+
+  /* Must come after copying location.  */
+  copy_warning (exp, stmt);
 
   /* Ensure RTL is created for debug args.  */
   if (decl && DECL_HAS_DEBUG_ARGS_P (decl))
@@ -2897,7 +2894,8 @@ expand_asm_loc (tree string, int vol, location_t locus)
 
       if (targetm.md_asm_adjust)
 	targetm.md_asm_adjust (output_rvec, input_rvec, input_mode,
-			       constraints, clobber_rvec, clobbered_regs);
+			       constraints, clobber_rvec, clobbered_regs,
+			       locus);
 
       asm_op = body;
       nclobbers = clobber_rvec.length ();
@@ -2954,7 +2952,8 @@ check_operand_nalternatives (const vec<const char *> &constraints)
    variable definition for error, NULL_TREE for ok.  */
 
 static bool
-tree_conflicts_with_clobbers_p (tree t, HARD_REG_SET *clobbered_regs)
+tree_conflicts_with_clobbers_p (tree t, HARD_REG_SET *clobbered_regs,
+				location_t loc)
 {
   /* Conflicts between asm-declared register variables and the clobber
      list are not allowed.  */
@@ -2962,9 +2961,8 @@ tree_conflicts_with_clobbers_p (tree t, HARD_REG_SET *clobbered_regs)
 
   if (overlap)
     {
-      error ("%<asm%> specifier for variable %qE conflicts with "
-	     "%<asm%> clobber list",
-	     DECL_NAME (overlap));
+      error_at (loc, "%<asm%> specifier for variable %qE conflicts with "
+		"%<asm%> clobber list", DECL_NAME (overlap));
 
       /* Reset registerness to stop multiple errors emitted for a single
 	 variable.  */
@@ -3074,19 +3072,19 @@ expand_asm_stmt (gasm *stmt)
       return;
     }
 
-  /* There are some legacy diagnostics in here, and also avoids an extra
-     parameter to targetm.md_asm_adjust.  */
+  /* There are some legacy diagnostics in here.  */
   save_input_location s_i_l(locus);
 
   unsigned noutputs = gimple_asm_noutputs (stmt);
   unsigned ninputs = gimple_asm_ninputs (stmt);
   unsigned nlabels = gimple_asm_nlabels (stmt);
   unsigned i;
+  bool error_seen = false;
 
   /* ??? Diagnose during gimplification?  */
   if (ninputs + noutputs + nlabels > MAX_RECOG_OPERANDS)
     {
-      error ("more than %d operands in %<asm%>", MAX_RECOG_OPERANDS);
+      error_at (locus, "more than %d operands in %<asm%>", MAX_RECOG_OPERANDS);
       return;
     }
 
@@ -3139,7 +3137,9 @@ expand_asm_stmt (gasm *stmt)
 	      if (j == -2)
 		{
 		  /* ??? Diagnose during gimplification?  */
-		  error ("unknown register name %qs in %<asm%>", regname);
+		  error_at (locus, "unknown register name %qs in %<asm%>",
+			    regname);
+		  error_seen = true;
 		}
 	      else if (j == -4)
 		{
@@ -3202,7 +3202,11 @@ expand_asm_stmt (gasm *stmt)
 		&& REG_P (DECL_RTL (output_tvec[j]))
 		&& HARD_REGISTER_P (DECL_RTL (output_tvec[j]))
 		&& output_hregno == REGNO (DECL_RTL (output_tvec[j])))
-	      error ("invalid hard register usage between output operands");
+	      {
+		error_at (locus, "invalid hard register usage between output "
+			  "operands");
+		error_seen = true;
+	      }
 
 	  /* Verify matching constraint operands use the same hard register
 	     and that the non-matching constraint operands do not use the same
@@ -3225,13 +3229,19 @@ expand_asm_stmt (gasm *stmt)
 		  }
 		if (i == match
 		    && output_hregno != input_hregno)
-		  error ("invalid hard register usage between output operand "
-			 "and matching constraint operand");
+		  {
+		    error_at (locus, "invalid hard register usage between "
+			      "output operand and matching constraint operand");
+		    error_seen = true;
+		  }
 		else if (early_clobber_p
 			 && i != match
 			 && output_hregno == input_hregno)
-		  error ("invalid hard register usage between earlyclobber "
-			 "operand and input operand");
+		  {
+		    error_at (locus, "invalid hard register usage between "
+			      "earlyclobber operand and input operand");
+		    error_seen = true;
+		  }
 	      }
 	}
 
@@ -3307,7 +3317,10 @@ expand_asm_stmt (gasm *stmt)
 	    op = validize_mem (op);
 
 	  if (! allows_reg && !MEM_P (op))
-	    error ("output number %d not directly addressable", i);
+	    {
+	      error_at (locus, "output number %d not directly addressable", i);
+	      error_seen = true;
+	    }
 	  if ((! allows_mem && MEM_P (op) && GET_MODE (op) != BLKmode)
 	      || GET_CODE (op) == CONCAT)
 	    {
@@ -3345,6 +3358,19 @@ expand_asm_stmt (gasm *stmt)
 
       if (is_inout)
 	inout_opnum.safe_push (i);
+    }
+
+  const char *str = gimple_asm_string (stmt);
+  if (error_seen)
+    {
+      ninputs = 0;
+      noutputs = 0;
+      inout_opnum.truncate (0);
+      output_rvec.truncate (0);
+      clobber_rvec.truncate (0);
+      constraints.truncate (0);
+      CLEAR_HARD_REG_SET (clobbered_regs);
+      str = "";
     }
 
   auto_vec<rtx, MAX_RECOG_OPERANDS> input_rvec;
@@ -3388,9 +3414,8 @@ expand_asm_stmt (gasm *stmt)
 	  if (allows_reg && TYPE_MODE (type) != BLKmode)
 	    op = force_reg (TYPE_MODE (type), op);
 	  else if (!allows_mem)
-	    warning (0, "%<asm%> operand %d probably does not match "
-		     "constraints",
-		     i + noutputs);
+	    warning_at (locus, 0, "%<asm%> operand %d probably does not match "
+			"constraints", i + noutputs);
 	  else if (MEM_P (op))
 	    {
 	      /* We won't recognize either volatile memory or memory
@@ -3405,7 +3430,7 @@ expand_asm_stmt (gasm *stmt)
     }
 
   /* For in-out operands, copy output rtx to input rtx.  */
-  unsigned ninout = inout_opnum.length();
+  unsigned ninout = inout_opnum.length ();
   for (i = 0; i < ninout; i++)
     {
       int j = inout_opnum[i];
@@ -3428,7 +3453,8 @@ expand_asm_stmt (gasm *stmt)
   if (targetm.md_asm_adjust)
     after_md_seq
 	= targetm.md_asm_adjust (output_rvec, input_rvec, input_mode,
-				 constraints, clobber_rvec, clobbered_regs);
+				 constraints, clobber_rvec, clobbered_regs,
+				 locus);
 
   /* Do not allow the hook to change the output and input count,
      lest it mess up the operand numbering.  */
@@ -3444,10 +3470,10 @@ expand_asm_stmt (gasm *stmt)
 
   bool clobber_conflict_found = 0;
   for (i = 0; i < noutputs; ++i)
-    if (tree_conflicts_with_clobbers_p (output_tvec[i], &clobbered_regs))
+    if (tree_conflicts_with_clobbers_p (output_tvec[i], &clobbered_regs, locus))
 	clobber_conflict_found = 1;
   for (i = 0; i < ninputs - ninout; ++i)
-    if (tree_conflicts_with_clobbers_p (input_tvec[i], &clobbered_regs))
+    if (tree_conflicts_with_clobbers_p (input_tvec[i], &clobbered_regs, locus))
 	clobber_conflict_found = 1;
 
   /* Make vectors for the expression-rtx, constraint strings,
@@ -3459,7 +3485,7 @@ expand_asm_stmt (gasm *stmt)
 
   rtx body = gen_rtx_ASM_OPERANDS ((noutputs == 0 ? VOIDmode
 				    : GET_MODE (output_rvec[0])),
-				   ggc_strdup (gimple_asm_string (stmt)),
+				   ggc_strdup (str),
 				   "", 0, argvec, constraintvec,
 				   labelvec, locus);
   MEM_VOLATILE_P (body) = gimple_asm_volatile_p (stmt);
@@ -4315,11 +4341,8 @@ avoid_deep_ter_for_debug (gimple *stmt, int depth)
 	  tree &vexpr = deep_ter_debug_map->get_or_insert (use);
 	  if (vexpr != NULL)
 	    continue;
-	  vexpr = make_node (DEBUG_EXPR_DECL);
+	  vexpr = build_debug_expr_decl (TREE_TYPE (use));
 	  gimple *def_temp = gimple_build_debug_bind (vexpr, use, g);
-	  DECL_ARTIFICIAL (vexpr) = 1;
-	  TREE_TYPE (vexpr) = TREE_TYPE (use);
-	  SET_DECL_MODE (vexpr, TYPE_MODE (TREE_TYPE (use)));
 	  gimple_stmt_iterator gsi = gsi_for_stmt (g);
 	  gsi_insert_after (&gsi, def_temp, GSI_NEW_STMT);
 	  avoid_deep_ter_for_debug (def_temp, 0);
@@ -5730,6 +5753,7 @@ expand_gimple_basic_block (basic_block bb, bool disable_tail_calls)
   rtx_insn *last;
   edge e;
   edge_iterator ei;
+  bool nondebug_stmt_seen = false;
 
   if (dump_file)
     fprintf (dump_file, "\n;; Generating RTL for gimple basic block %d\n",
@@ -5810,6 +5834,8 @@ expand_gimple_basic_block (basic_block bb, bool disable_tail_calls)
       basic_block new_bb;
 
       stmt = gsi_stmt (gsi);
+      if (!is_gimple_debug (stmt))
+	nondebug_stmt_seen = true;
 
       /* If this statement is a non-debug one, and we generate debug
 	 insns, then this one might be the last real use of a TERed
@@ -6064,7 +6090,7 @@ expand_gimple_basic_block (basic_block bb, bool disable_tail_calls)
   /* Expand implicit goto and convert goto_locus.  */
   FOR_EACH_EDGE (e, ei, bb->succs)
     {
-      if (e->goto_locus != UNKNOWN_LOCATION || !stmt)
+      if (e->goto_locus != UNKNOWN_LOCATION || !nondebug_stmt_seen)
 	set_curr_insn_location (e->goto_locus);
       if ((e->flags & EDGE_FALLTHRU) && e->dest != bb->next_bb)
 	{

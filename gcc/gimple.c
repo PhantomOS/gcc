@@ -48,7 +48,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "attr-fnspec.h"
 #include "ipa-modref-tree.h"
 #include "ipa-modref.h"
-
+#include "dbgcnt.h"
 
 /* All the tuples have their operand vector (if present) at the very bottom
    of the structure.  Therefore, the offset required to find the
@@ -241,7 +241,7 @@ gimple_build_call_1 (tree fn, unsigned nargs)
    specified in vector ARGS.  */
 
 gcall *
-gimple_build_call_vec (tree fn, vec<tree> args)
+gimple_build_call_vec (tree fn, const vec<tree> &args)
 {
   unsigned i;
   unsigned nargs = args.length ();
@@ -338,7 +338,7 @@ gimple_build_call_internal (enum internal_fn fn, unsigned nargs, ...)
    specified in vector ARGS.  */
 
 gcall *
-gimple_build_call_internal_vec (enum internal_fn fn, vec<tree> args)
+gimple_build_call_internal_vec (enum internal_fn fn, const vec<tree> &args)
 {
   unsigned i, nargs;
   gcall *call;
@@ -399,7 +399,7 @@ gimple_build_call_from_tree (tree t, tree fnptrtype)
   gimple_call_set_va_arg_pack (call, CALL_EXPR_VA_ARG_PACK (t));
   gimple_call_set_nothrow (call, TREE_NOTHROW (t));
   gimple_call_set_by_descriptor (call, CALL_EXPR_BY_DESCRIPTOR (t));
-  gimple_set_no_warning (call, TREE_NO_WARNING (t));
+  copy_warning (call, t);
 
   if (fnptrtype)
     {
@@ -802,7 +802,7 @@ gimple_build_switch_nlabels (unsigned nlabels, tree index, tree default_label)
    ARGS is a vector of labels excluding the default.  */
 
 gswitch *
-gimple_build_switch (tree index, tree default_label, vec<tree> args)
+gimple_build_switch (tree index, tree default_label, const vec<tree> &args)
 {
   unsigned i, nlabels = args.length ();
 
@@ -1038,6 +1038,21 @@ gimple_build_omp_master (gimple_seq body)
   return p;
 }
 
+/* Build a GIMPLE_OMP_MASKED statement.
+
+   BODY is the sequence of statements to be executed by the selected thread(s).  */
+
+gimple *
+gimple_build_omp_masked (gimple_seq body, tree clauses)
+{
+  gimple *p = gimple_alloc (GIMPLE_OMP_MASKED, 0);
+  gimple_omp_masked_set_clauses (p, clauses);
+  if (body)
+    gimple_omp_set_body (p, body);
+
+  return p;
+}
+
 /* Build a GIMPLE_OMP_TASKGROUP statement.
 
    BODY is the sequence of statements to be executed by the taskgroup
@@ -1165,6 +1180,24 @@ gimple_build_omp_single (gimple_seq body, tree clauses)
   if (body)
     gimple_omp_set_body (p, body);
   gimple_omp_single_set_clauses (p, clauses);
+
+  return p;
+}
+
+
+/* Build a GIMPLE_OMP_SCOPE statement.
+
+   BODY is the sequence of statements that will be executed once.
+   CLAUSES are any of the OMP scope construct's clauses: private, reduction,
+   nowait.  */
+
+gimple *
+gimple_build_omp_scope (gimple_seq body, tree clauses)
+{
+  gimple *p = gimple_alloc (GIMPLE_OMP_SCOPE, 0);
+  gimple_omp_scope_set_clauses (p, clauses);
+  if (body)
+    gimple_omp_set_body (p, body);
 
   return p;
 }
@@ -1516,12 +1549,12 @@ gimple_call_fnspec (const gcall *stmt)
       && DECL_IS_OPERATOR_DELETE_P (fndecl)
       && DECL_IS_REPLACEABLE_OPERATOR (fndecl)
       && gimple_call_from_new_or_delete (stmt))
-    return ".co ";
+    return ". o ";
   /* Similarly operator new can be treated as malloc.  */
   if (fndecl
       && DECL_IS_REPLACEABLE_OPERATOR_NEW_P (fndecl)
       && gimple_call_from_new_or_delete (stmt))
-    return "mC";
+    return "m ";
   return "";
 }
 
@@ -1542,11 +1575,12 @@ gimple_call_arg_flags (const gcall *stmt, unsigned arg)
       else
 	{
 	  if (fnspec.arg_direct_p (arg))
-	    flags |= EAF_DIRECT;
+	    flags |= EAF_NO_INDIRECT_READ | EAF_NO_INDIRECT_ESCAPE
+		     | EAF_NOT_RETURNED_INDIRECTLY | EAF_NO_INDIRECT_CLOBBER;
 	  if (fnspec.arg_noescape_p (arg))
-	    flags |= EAF_NOESCAPE | EAF_NODIRECTESCAPE;
+	    flags |= EAF_NO_DIRECT_ESCAPE | EAF_NO_INDIRECT_ESCAPE;
 	  if (fnspec.arg_readonly_p (arg))
-	    flags |= EAF_NOCLOBBER;
+	    flags |= EAF_NO_DIRECT_CLOBBER | EAF_NO_INDIRECT_CLOBBER;
 	}
     }
   tree callee = gimple_call_fndecl (stmt);
@@ -1562,13 +1596,65 @@ gimple_call_arg_flags (const gcall *stmt, unsigned arg)
 
 	  /* We have possibly optimized out load.  Be conservative here.  */
 	  if (!node->binds_to_current_def_p ())
-	    {
-	      if ((modref_flags & EAF_UNUSED) && !(flags & EAF_UNUSED))
-		modref_flags &= ~EAF_UNUSED;
-	      if ((modref_flags & EAF_DIRECT) && !(flags & EAF_DIRECT))
-		modref_flags &= ~EAF_DIRECT;
-	    }
-	  flags |= modref_flags;
+	    modref_flags = interposable_eaf_flags (modref_flags, flags);
+	  if (dbg_cnt (ipa_mod_ref_pta))
+	    flags |= modref_flags;
+	}
+    }
+  return flags;
+}
+
+/* Detects argument flags for return slot on call STMT.  */
+
+int
+gimple_call_retslot_flags (const gcall *stmt)
+{
+  int flags = implicit_retslot_eaf_flags;
+
+  tree callee = gimple_call_fndecl (stmt);
+  if (callee)
+    {
+      cgraph_node *node = cgraph_node::get (callee);
+      modref_summary *summary = node ? get_modref_function_summary (node)
+				: NULL;
+
+      if (summary)
+	{
+	  int modref_flags = summary->retslot_flags;
+
+	  /* We have possibly optimized out load.  Be conservative here.  */
+	  if (!node->binds_to_current_def_p ())
+	    modref_flags = interposable_eaf_flags (modref_flags, flags);
+	  if (dbg_cnt (ipa_mod_ref_pta))
+	    flags |= modref_flags;
+	}
+    }
+  return flags;
+}
+
+/* Detects argument flags for static chain on call STMT.  */
+
+int
+gimple_call_static_chain_flags (const gcall *stmt)
+{
+  int flags = 0;
+
+  tree callee = gimple_call_fndecl (stmt);
+  if (callee)
+    {
+      cgraph_node *node = cgraph_node::get (callee);
+      modref_summary *summary = node ? get_modref_function_summary (node)
+				: NULL;
+
+      /* Nested functions should always bind to current def since
+	 there is no public ABI for them.  */
+      gcc_checking_assert (node->binds_to_current_def_p ());
+      if (summary)
+	{
+	  int modref_flags = summary->static_chain_flags;
+
+	  if (dbg_cnt (ipa_mod_ref_pta))
+	    flags |= modref_flags;
 	}
     }
   return flags;
@@ -2005,6 +2091,11 @@ gimple_copy (gimple *stmt)
 	  }
 	  goto copy_omp_body;
 
+	case GIMPLE_OMP_SCOPE:
+	  t = unshare_expr (gimple_omp_scope_clauses (stmt));
+	  gimple_omp_scope_set_clauses (copy, t);
+	  goto copy_omp_body;
+
 	case GIMPLE_OMP_TARGET:
 	  {
 	    gomp_target *omp_target_stmt = as_a <gomp_target *> (stmt);
@@ -2030,6 +2121,11 @@ gimple_copy (gimple *stmt)
 	  new_seq = gimple_seq_copy (gimple_omp_body (stmt));
 	  gimple_omp_set_body (copy, new_seq);
 	  break;
+
+	case GIMPLE_OMP_MASKED:
+	  t = unshare_expr (gimple_omp_masked_clauses (stmt));
+	  gimple_omp_masked_set_clauses (copy, t);
+	  goto copy_omp_body;
 
 	case GIMPLE_TRANSACTION:
 	  new_seq = gimple_seq_copy (gimple_transaction_body (
@@ -2129,7 +2225,7 @@ gimple_has_side_effects (const gimple *s)
    S is a GIMPLE_ASSIGN, the LHS of the assignment is also checked.  */
 
 bool
-gimple_could_trap_p_1 (gimple *s, bool include_mem, bool include_stores)
+gimple_could_trap_p_1 (const gimple *s, bool include_mem, bool include_stores)
 {
   tree t, div = NULL_TREE;
   enum tree_code op;
@@ -2146,11 +2242,13 @@ gimple_could_trap_p_1 (gimple *s, bool include_mem, bool include_stores)
   switch (gimple_code (s))
     {
     case GIMPLE_ASM:
-      return gimple_asm_volatile_p (as_a <gasm *> (s));
+      return gimple_asm_volatile_p (as_a <const gasm *> (s));
 
     case GIMPLE_CALL:
+      if (gimple_call_internal_p (s))
+	return false;
       t = gimple_call_fndecl (s);
-      /* Assume that calls to weak functions may trap.  */
+      /* Assume that indirect and calls to weak functions may trap.  */
       if (!t || !DECL_P (t) || DECL_WEAK (t))
 	return true;
       return false;
@@ -2162,12 +2260,12 @@ gimple_could_trap_p_1 (gimple *s, bool include_mem, bool include_stores)
       if (op == COND_EXPR)
 	return tree_could_trap_p (gimple_assign_rhs1 (s));
 
-      /* For comparisons we need to check rhs operand types instead of rhs type
+      /* For comparisons we need to check rhs operand types instead of lhs type
          (which is BOOLEAN_TYPE).  */
       if (TREE_CODE_CLASS (op) == tcc_comparison)
 	t = TREE_TYPE (gimple_assign_rhs1 (s));
       else
-	t = gimple_expr_type (s);
+	t = TREE_TYPE (gimple_assign_lhs (s));
 
       if (get_gimple_rhs_class (op) == GIMPLE_BINARY_RHS)
 	div = gimple_assign_rhs2 (s);
@@ -2192,7 +2290,7 @@ gimple_could_trap_p_1 (gimple *s, bool include_mem, bool include_stores)
 /* Return true if statement S can trap.  */
 
 bool
-gimple_could_trap_p (gimple *s)
+gimple_could_trap_p (const gimple *s)
 {
   return gimple_could_trap_p_1 (s, true, true);
 }
@@ -3049,7 +3147,7 @@ compare_case_labels (const void *p1, const void *p2)
 /* Sort the case labels in LABEL_VEC in place in ascending order.  */
 
 void
-sort_case_labels (vec<tree> label_vec)
+sort_case_labels (vec<tree> &label_vec)
 {
   label_vec.qsort (compare_case_labels);
 }
@@ -3074,7 +3172,7 @@ sort_case_labels (vec<tree> label_vec)
    found or not.  */
 
 void
-preprocess_case_label_vec_for_gimple (vec<tree> labels,
+preprocess_case_label_vec_for_gimple (vec<tree> &labels,
 				      tree index_type,
 				      tree *default_casep)
 {

@@ -444,6 +444,12 @@ package body Sem_Type is
                    Find_Dispatching_Type (E))
          then
             Add_One_Interp (N, Interface_Alias (E), T);
+
+         --  Otherwise this is the first interpretation, N has type Any_Type
+         --  and we must place the new type on the node.
+
+         else
+            Set_Etype (N, T);
          end if;
 
          return;
@@ -1020,10 +1026,10 @@ package body Sem_Type is
       elsif T2 = Any_Composite and then Is_Aggregate_Type (T1) then
          return True;
 
-      --  In Ada_2020, an aggregate is compatible with the type that
-      --  as the ccorrespoding aspect.
+      --  In Ada_2022, an aggregate is compatible with the type that
+      --  as the corresponding aspect.
 
-      elsif Ada_Version >= Ada_2020
+      elsif Ada_Version >= Ada_2022
         and then T2 = Any_Composite
         and then Present (Find_Aspect (T1, Aspect_Aggregate))
       then
@@ -1403,7 +1409,9 @@ package body Sem_Type is
            and then Nkind (Unit_Declaration_Node (S)) =
                                          N_Subprogram_Renaming_Declaration
 
-           --  Why the Comes_From_Source test here???
+           --  Determine if the renaming came from source or was generated as a
+           --  a result of generic expansion since the actual is represented by
+           --  a constructed subprogram renaming.
 
            and then not Comes_From_Source (Unit_Declaration_Node (S))
 
@@ -1460,7 +1468,8 @@ package body Sem_Type is
             then
                return True;
 
-            --  ??? There are possibly other cases to consider
+            --  Formal_Typ is a private view, or Opnd_Typ and Formal_Typ are
+            --  compatible only on a base-type basis.
 
             else
                return False;
@@ -1810,26 +1819,42 @@ package body Sem_Type is
       It2  := It;
       Nam2 := It.Nam;
 
-      --  Check whether one of the entities is an Ada 2005/2012 and we are
-      --  operating in an earlier mode, in which case we discard the Ada
-      --  2005/2012 entity, so that we get proper Ada 95 overload resolution.
+      --  Check whether one of the entities is an Ada 2005/2012/2022 and we
+      --  are operating in an earlier mode, in which case we discard the Ada
+      --  2005/2012/2022 entity, so that we get proper Ada 95 overload
+      --  resolution.
 
       if Ada_Version < Ada_2005 then
-         if Is_Ada_2005_Only (Nam1) or else Is_Ada_2012_Only (Nam1) then
+         if Is_Ada_2005_Only (Nam1)
+           or else Is_Ada_2012_Only (Nam1)
+           or else Is_Ada_2022_Only (Nam1)
+         then
             return It2;
-         elsif Is_Ada_2005_Only (Nam2) or else Is_Ada_2012_Only (Nam1) then
+
+         elsif Is_Ada_2005_Only (Nam2)
+           or else Is_Ada_2012_Only (Nam2)
+           or else Is_Ada_2022_Only (Nam2)
+         then
             return It1;
          end if;
-      end if;
 
-      --  Check whether one of the entities is an Ada 2012 entity and we are
-      --  operating in Ada 2005 mode, in which case we discard the Ada 2012
-      --  entity, so that we get proper Ada 2005 overload resolution.
+      --  Check whether one of the entities is an Ada 2012/2022 entity and we
+      --  are operating in Ada 2005 mode, in which case we discard the Ada 2012
+      --  Ada 2022 entity, so that we get proper Ada 2005 overload resolution.
 
-      if Ada_Version = Ada_2005 then
-         if Is_Ada_2012_Only (Nam1) then
+      elsif Ada_Version = Ada_2005 then
+         if Is_Ada_2012_Only (Nam1) or else Is_Ada_2022_Only (Nam1) then
             return It2;
-         elsif Is_Ada_2012_Only (Nam2) then
+         elsif Is_Ada_2012_Only (Nam2) or else Is_Ada_2022_Only (Nam2) then
+            return It1;
+         end if;
+
+      --  Ditto for Ada 2012 vs Ada 2022.
+
+      elsif Ada_Version = Ada_2012 then
+         if Is_Ada_2022_Only (Nam1) then
+            return It2;
+         elsif Is_Ada_2022_Only (Nam2) then
             return It1;
          end if;
       end if;
@@ -2413,8 +2438,9 @@ package body Sem_Type is
    -------------------------
 
    function Has_Compatible_Type
-     (N   : Node_Id;
-      Typ : Entity_Id) return Boolean
+     (N              : Node_Id;
+      Typ            : Entity_Id;
+      For_Comparison : Boolean := False) return Boolean
    is
       I  : Interp_Index;
       It : Interp;
@@ -2424,11 +2450,8 @@ package body Sem_Type is
          return False;
       end if;
 
-      if Nkind (N) = N_Subtype_Indication
-        or else not Is_Overloaded (N)
-      then
-         return
-           Covers (Typ, Etype (N))
+      if Nkind (N) = N_Subtype_Indication or else not Is_Overloaded (N) then
+         if Covers (Typ, Etype (N))
 
             --  Ada 2005 (AI-345): The context may be a synchronized interface.
             --  If the type is already frozen use the corresponding_record
@@ -2447,11 +2470,6 @@ package body Sem_Type is
                and then Covers (Corresponding_Record_Type (Typ), Etype (N)))
 
            or else
-             (not Is_Tagged_Type (Typ)
-               and then Ekind (Typ) /= E_Anonymous_Access_Type
-               and then Covers (Etype (N), Typ))
-
-           or else
              (Nkind (N) = N_Integer_Literal
                and then Present (Find_Aspect (Typ, Aspect_Integer_Literal)))
 
@@ -2461,7 +2479,16 @@ package body Sem_Type is
 
            or else
              (Nkind (N) = N_String_Literal
-               and then Present (Find_Aspect (Typ, Aspect_String_Literal)));
+               and then Present (Find_Aspect (Typ, Aspect_String_Literal)))
+
+           or else
+             (For_Comparison
+               and then not Is_Tagged_Type (Typ)
+               and then Ekind (Typ) /= E_Anonymous_Access_Type
+               and then Covers (Etype (N), Typ))
+         then
+            return True;
+         end if;
 
       --  Overloaded case
 
@@ -2476,24 +2503,27 @@ package body Sem_Type is
                --  Ada 2005 (AI-345)
 
               or else
-                (Is_Concurrent_Type (It.Typ)
+                (Is_Record_Type (Typ)
+                  and then Is_Concurrent_Type (It.Typ)
                   and then Present (Corresponding_Record_Type
                                                              (Etype (It.Typ)))
                   and then Covers (Typ, Corresponding_Record_Type
                                                              (Etype (It.Typ))))
 
-              or else (not Is_Tagged_Type (Typ)
-                         and then Ekind (Typ) /= E_Anonymous_Access_Type
-                         and then Covers (It.Typ, Typ))
+             or else
+               (For_Comparison
+                 and then not Is_Tagged_Type (Typ)
+                 and then Ekind (Typ) /= E_Anonymous_Access_Type
+                 and then Covers (It.Typ, Typ))
             then
                return True;
             end if;
 
             Get_Next_Interp (I, It);
          end loop;
-
-         return False;
       end if;
+
+      return False;
    end Has_Compatible_Type;
 
    ---------------------
@@ -3399,7 +3429,8 @@ package body Sem_Type is
       --  Ada 2005 (AI-251): T1 is a concrete type that implements the
       --  class-wide interface T2
 
-      elsif Is_Class_Wide_Type (T2)
+      elsif Is_Tagged_Type (T1)
+        and then Is_Class_Wide_Type (T2)
         and then Is_Interface (Etype (T2))
         and then Interface_Present_In_Ancestor (Typ   => T1,
                                                 Iface => Etype (T2))

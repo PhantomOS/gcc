@@ -82,6 +82,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple.h"
 #include "options.h"
 #include "function-abi.h"
+#include "value-range.h"
+#include "gimple-range.h"
 
 /* So we can assign to cfun in this file.  */
 #undef cfun
@@ -3034,7 +3036,15 @@ assign_parm_setup_block (struct assign_parm_data_all *all,
 		  reg = gen_rtx_REG (word_mode, REGNO (entry_parm));
 		  reg = convert_to_mode (mode, copy_to_reg (reg), 1);
 		}
-	      emit_move_insn (change_address (mem, mode, 0), reg);
+
+	      /* We use adjust_address to get a new MEM with the mode
+		 changed.  adjust_address is better than change_address
+		 for this purpose because adjust_address does not lose
+		 the MEM_EXPR associated with the MEM.
+
+		 If the MEM_EXPR is lost, then optimizations like DSE
+		 assume the MEM escapes and thus is not subject to DSE.  */
+	      emit_move_insn (adjust_address (mem, mode, 0), reg);
 	    }
 
 #ifdef BLOCK_REG_PADDING
@@ -3825,9 +3835,16 @@ assign_parms (tree fndecl)
 	{
 	  rtx real_decl_rtl;
 
-	  real_decl_rtl = targetm.calls.function_value (TREE_TYPE (decl_result),
-							fndecl, true);
-	  REG_FUNCTION_VALUE_P (real_decl_rtl) = 1;
+	  /* Unless the psABI says not to.  */
+	  if (TYPE_EMPTY_P (TREE_TYPE (decl_result)))
+	    real_decl_rtl = NULL_RTX;
+	  else
+	    {
+	      real_decl_rtl
+		= targetm.calls.function_value (TREE_TYPE (decl_result),
+						fndecl, true);
+	      REG_FUNCTION_VALUE_P (real_decl_rtl) = 1;
+	    }
 	  /* The delay slot scheduler assumes that crtl->return_rtx
 	     holds the hard register containing the return value, not a
 	     temporary pseudo.  */
@@ -5406,9 +5423,11 @@ expand_function_end (void)
       tree decl_result = DECL_RESULT (current_function_decl);
       rtx decl_rtl = DECL_RTL (decl_result);
 
-      if (REG_P (decl_rtl)
-	  ? REGNO (decl_rtl) >= FIRST_PSEUDO_REGISTER
-	  : DECL_REGISTER (decl_result))
+      if ((REG_P (decl_rtl)
+	   ? REGNO (decl_rtl) >= FIRST_PSEUDO_REGISTER
+	   : DECL_REGISTER (decl_result))
+	  /* Unless the psABI says not to.  */
+	  && !TYPE_EMPTY_P (TREE_TYPE (decl_result)))
 	{
 	  rtx real_decl_rtl = crtl->return_rtx;
 	  complex_mode cmode;

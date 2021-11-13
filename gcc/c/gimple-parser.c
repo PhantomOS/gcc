@@ -56,13 +56,13 @@ along with GCC; see the file COPYING3.  If not see
 #include "internal-fn.h"
 #include "cfg.h"
 #include "cfghooks.h"
+#include "bitmap.h"
 #include "cfganal.h"
 #include "tree-cfg.h"
 #include "gimple-iterator.h"
 #include "cfgloop.h"
 #include "tree-phinodes.h"
 #include "tree-into-ssa.h"
-#include "bitmap.h"
 
 
 /* GIMPLE parser state.  */
@@ -1622,16 +1622,20 @@ c_parser_gimple_postfix_expression (gimple_parser &parser)
 		  tree val = c_parser_gimple_postfix_expression (parser).value;
 		  if (! val
 		      || val == error_mark_node
-		      || (!CONSTANT_CLASS_P (val)
-			  && !(addr_p
-			       && (TREE_CODE (val) == STRING_CST
-				   || DECL_P (val)))))
+		      || (!CONSTANT_CLASS_P (val) && !addr_p))
 		    {
 		      c_parser_error (parser, "invalid _Literal");
 		      return expr;
 		    }
 		  if (addr_p)
-		    val = build1 (ADDR_EXPR, type, val);
+		    {
+		      val = build1 (ADDR_EXPR, type, val);
+		      if (!is_gimple_invariant_address (val))
+			{
+			  c_parser_error (parser, "invalid _Literal");
+			  return expr;
+			}
+		    }
 		  if (neg_p)
 		    {
 		      val = const_unop (NEGATE_EXPR, TREE_TYPE (val), val);
@@ -1813,6 +1817,14 @@ c_parser_gimple_postfix_expression_after_primary (gimple_parser &parser,
 	case CPP_DEREF:
 	  {
 	    /* Structure element reference.  */
+	    if (!POINTER_TYPE_P (TREE_TYPE (expr.value)))
+	      {
+		c_parser_error (parser, "dereference of non-pointer");
+		expr.set_error ();
+		expr.original_code = ERROR_MARK;
+		expr.original_type = NULL;
+		return expr;
+	      }
 	    c_parser_consume_token (parser);
 	    if (c_parser_next_token_is (parser, CPP_NAME))
 	      {
@@ -2112,6 +2124,14 @@ c_parser_gimple_paren_condition (gimple_parser &parser)
   if (! c_parser_require (parser, CPP_OPEN_PAREN, "expected %<(%>"))
     return error_mark_node;
   tree cond = c_parser_gimple_binary_expression (parser).value;
+  if (cond != error_mark_node
+      && ! COMPARISON_CLASS_P (cond)
+      && ! CONSTANT_CLASS_P (cond)
+      && ! SSA_VAR_P (cond))
+    {
+      c_parser_error (parser, "comparison required");
+      cond = error_mark_node;
+    }
   if (! c_parser_require (parser, CPP_CLOSE_PAREN, "expected %<)%>"))
     return error_mark_node;
   return cond;

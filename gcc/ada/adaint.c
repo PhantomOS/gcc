@@ -98,6 +98,7 @@
 
 #ifdef __QNX__
 #include <sys/syspage.h>
+#include <sys/time.h>
 #endif
 
 #ifdef IN_RTS
@@ -1570,7 +1571,7 @@ extern long long __gnat_file_time(char* name)
 /* Set the file time stamp.  */
 
 void
-__gnat_set_file_time_name (char *name, time_t time_stamp)
+__gnat_set_file_time_name (char *name, OS_Time time_stamp)
 {
 #if defined (__vxworks)
 
@@ -1606,7 +1607,7 @@ __gnat_set_file_time_name (char *name, time_t time_stamp)
   time_t t;
 
   /* Set modification time to requested time.  */
-  utimbuf.modtime = time_stamp;
+  utimbuf.modtime = (time_t) time_stamp;
 
   /* Set access time to now in local time.  */
   t = time (NULL);
@@ -2423,9 +2424,10 @@ __gnat_portable_spawn (char *args[] ATTRIBUTE_UNUSED)
   if (pid == 0)
     {
       /* The child. */
-      __gnat_in_child_after_fork = 1;
-      if (execv (args[0], MAYBE_TO_PTR32 (args)) != 0)
-	_exit (1);
+      execv (args[0], MAYBE_TO_PTR32 (args));
+
+      /* execv() returns only on error */
+      _exit (1);
     }
 
   /* The parent.  */
@@ -2486,7 +2488,7 @@ __gnat_number_of_cpus (void)
 {
   int cores = 1;
 
-#ifdef _SC_NPROCESSORS_ONLN
+#if defined (_SC_NPROCESSORS_ONLN)
   cores = (int) sysconf (_SC_NPROCESSORS_ONLN);
 
 #elif defined (__QNX__)
@@ -2822,8 +2824,10 @@ __gnat_portable_no_block_spawn (char *args[] ATTRIBUTE_UNUSED)
   if (pid == 0)
     {
       /* The child.  */
-      if (execv (args[0], MAYBE_TO_PTR32 (args)) != 0)
-	_exit (1);
+      execv (args[0], MAYBE_TO_PTR32 (args));
+
+      /* execv() returns only on error */
+      _exit (1);
     }
 
   return pid;
@@ -3542,6 +3546,9 @@ __gnat_get_executable_load_address (void)
   struct link_map *map = _r_debug.r_map;
 
   return (const void *)map->l_addr;
+
+#elif defined (_WIN32)
+  return GetModuleHandle (NULL);
 
 #else
   return NULL;

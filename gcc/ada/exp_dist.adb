@@ -300,12 +300,9 @@ package body Exp_Dist is
       NVList      : Entity_Id;
       Parameter   : Entity_Id;
       Constrained : Boolean;
-      RACW_Ctrl   : Boolean := False;
       Any         : Entity_Id) return Node_Id;
    --  Return a call to Add_Item to add the Any corresponding to the designated
    --  formal Parameter (with the indicated Constrained status) to NVList.
-   --  RACW_Ctrl must be set to True for controlling formals of distributed
-   --  object primitive operations.
 
    --------------------
    -- Stub_Structure --
@@ -1089,7 +1086,6 @@ package body Exp_Dist is
       NVList      : Entity_Id;
       Parameter   : Entity_Id;
       Constrained : Boolean;
-      RACW_Ctrl   : Boolean := False;
       Any         : Entity_Id) return Node_Id
    is
       Parameter_Name_String : String_Id;
@@ -1146,7 +1142,7 @@ package body Exp_Dist is
 
       Parameter_Name_String := String_From_Name_Buffer;
 
-      if RACW_Ctrl or else Nkind (Parameter) = N_Defining_Identifier then
+      if Nkind (Parameter) = N_Defining_Identifier then
 
          --  When the parameter passed to Add_Parameter_To_NVList is an
          --  Extra_Constrained parameter, Parameter is an N_Defining_
@@ -1424,6 +1420,7 @@ package body Exp_Dist is
               and then Chars (Current_Primitive) /= Name_uAlignment
               and then not
                 (Is_TSS (Current_Primitive, TSS_Deep_Finalize) or else
+                 Is_TSS (Current_Primitive, TSS_Put_Image)     or else
                  Is_TSS (Current_Primitive, TSS_Stream_Input)  or else
                  Is_TSS (Current_Primitive, TSS_Stream_Output) or else
                  Is_TSS (Current_Primitive, TSS_Stream_Read)   or else
@@ -2859,9 +2856,9 @@ package body Exp_Dist is
       if E_Calling_Stubs = Empty then
          RCI_Locator := RCI_Locator_Table.Get (RCI_Package);
 
-         --  The RCI_Locator package and calling stub are is inserted at the
-         --  top level in the current unit, and must appear in the proper scope
-         --  so that it is not prematurely removed by the GCC back end.
+         --  The RCI_Locator package and calling stub are inserted at the top
+         --  level in the current unit, and must appear in the proper scope so
+         --  that it is not prematurely removed by the GCC back end.
 
          declare
             Scop : constant Entity_Id := Cunit_Entity (Current_Sem_Unit);
@@ -10906,8 +10903,8 @@ package body Exp_Dist is
                raise Program_Error;
             end if;
 
-            --  TBD: fixed point types???
-            --  TBverified numeric types with a biased representation???
+            --  What about fixed point types and numeric types with a biased
+            --  representation???
 
          end Find_Numeric_Representation;
 

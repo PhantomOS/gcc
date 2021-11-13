@@ -208,9 +208,9 @@
   "ARM_HAVE_<MODE>_ARITH && !TARGET_REALLY_IWMMXT"
 )
 
-(define_expand "neg<mode>2"
+(define_expand "<absneg_str><mode>2"
   [(set (match_operand:VDQWH 0 "s_register_operand" "")
-	(neg:VDQWH (match_operand:VDQWH 1 "s_register_operand" "")))]
+	(ABSNEG:VDQWH (match_operand:VDQWH 1 "s_register_operand" "")))]
   "ARM_HAVE_<MODE>_ARITH && !TARGET_REALLY_IWMMXT"
 )
 
@@ -281,8 +281,8 @@
 })
 
 (define_expand "movmisalign<mode>"
- [(set (match_operand:VDQX 0 "neon_perm_struct_or_reg_operand")
-	(unspec:VDQX [(match_operand:VDQX 1 "neon_perm_struct_or_reg_operand")]
+ [(set (match_operand:VDQ 0 "neon_perm_struct_or_reg_operand")
+	(unspec:VDQ [(match_operand:VDQ 1 "neon_perm_struct_or_reg_operand")]
 	 UNSPEC_MISALIGNED_ACCESS))]
  "ARM_HAVE_<MODE>_LDST && !BYTES_BIG_ENDIAN
   && unaligned_access && !TARGET_REALLY_IWMMXT"
@@ -537,5 +537,177 @@
     emit_insn (gen_neon_vst4<mode> (operands[0], operands[1]));
   else
     emit_insn (gen_mve_vst4q<mode> (operands[0], operands[1]));
+  DONE;
+})
+
+(define_expand "reduc_plus_scal_<mode>"
+  [(match_operand:<V_elem> 0 "nonimmediate_operand")
+   (match_operand:VQ 1 "s_register_operand")]
+  "ARM_HAVE_<MODE>_ARITH
+   && !(TARGET_HAVE_MVE && FLOAT_MODE_P (<MODE>mode))
+   && !BYTES_BIG_ENDIAN"
+{
+  if (TARGET_NEON)
+    {
+      rtx step1 = gen_reg_rtx (<V_HALF>mode);
+
+      emit_insn (gen_quad_halves_plus<mode> (step1, operands[1]));
+      emit_insn (gen_reduc_plus_scal_<V_half> (operands[0], step1));
+    }
+  else
+    {
+      /* vaddv generates a 32 bits accumulator.  */
+      rtx op0 = gen_reg_rtx (SImode);
+
+      emit_insn (gen_mve_vaddvq (VADDVQ_S, <MODE>mode, op0, operands[1]));
+      emit_move_insn (operands[0], gen_lowpart (<V_elem>mode, op0));
+    }
+
+  DONE;
+})
+
+(define_expand "avg<mode>3_floor"
+  [(match_operand:MVE_2 0 "s_register_operand")
+   (match_operand:MVE_2 1 "s_register_operand")
+   (match_operand:MVE_2 2 "s_register_operand")]
+  "ARM_HAVE_<MODE>_ARITH"
+{
+  if (TARGET_HAVE_MVE)
+    emit_insn (gen_mve_vhaddq (VHADDQ_S, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  else
+    emit_insn (gen_neon_vhadd (UNSPEC_VHADD_S, UNSPEC_VHADD_S, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  DONE;
+})
+
+(define_expand "uavg<mode>3_floor"
+  [(match_operand:MVE_2 0 "s_register_operand")
+   (match_operand:MVE_2 1 "s_register_operand")
+   (match_operand:MVE_2 2 "s_register_operand")]
+  "ARM_HAVE_<MODE>_ARITH"
+{
+  if (TARGET_HAVE_MVE)
+    emit_insn (gen_mve_vhaddq (VHADDQ_U, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  else
+    emit_insn (gen_neon_vhadd (UNSPEC_VHADD_U, UNSPEC_VHADD_U, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  DONE;
+})
+
+(define_expand "avg<mode>3_ceil"
+  [(match_operand:MVE_2 0 "s_register_operand")
+   (match_operand:MVE_2 1 "s_register_operand")
+   (match_operand:MVE_2 2 "s_register_operand")]
+  "ARM_HAVE_<MODE>_ARITH"
+{
+  if (TARGET_HAVE_MVE)
+    emit_insn (gen_mve_vrhaddq (VRHADDQ_S, <MODE>mode,
+				operands[0], operands[1], operands[2]));
+  else
+    emit_insn (gen_neon_vhadd (UNSPEC_VRHADD_S, UNSPEC_VRHADD_S, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  DONE;
+})
+
+(define_expand "uavg<mode>3_ceil"
+  [(match_operand:MVE_2 0 "s_register_operand")
+   (match_operand:MVE_2 1 "s_register_operand")
+   (match_operand:MVE_2 2 "s_register_operand")]
+  "ARM_HAVE_<MODE>_ARITH"
+{
+  if (TARGET_HAVE_MVE)
+    emit_insn (gen_mve_vrhaddq (VRHADDQ_U, <MODE>mode,
+				operands[0], operands[1], operands[2]));
+  else
+    emit_insn (gen_neon_vhadd (UNSPEC_VRHADD_U, UNSPEC_VRHADD_U, <MODE>mode,
+			       operands[0], operands[1], operands[2]));
+  DONE;
+})
+
+(define_expand "clz<mode>2"
+ [(set (match_operand:VDQIW 0 "s_register_operand")
+       (clz:VDQIW (match_operand:VDQIW 1 "s_register_operand")))]
+  "ARM_HAVE_<MODE>_ARITH
+   && !TARGET_REALLY_IWMMXT"
+)
+
+;; vmovl[tb] are not available for V4SI on MVE
+(define_expand "vec_unpack<US>_hi_<mode>"
+  [(set (match_operand:<V_unpack> 0 "register_operand")
+	(SE:<V_unpack> (vec_select:<V_HALF>
+			 (match_operand:VU 1 "register_operand")
+			 (match_dup 2))))]
+ "ARM_HAVE_<MODE>_ARITH
+  && !TARGET_REALLY_IWMMXT
+  && ! (<MODE>mode == V4SImode && TARGET_HAVE_MVE)
+  && !BYTES_BIG_ENDIAN"
+  {
+    rtvec v = rtvec_alloc (<V_mode_nunits>/2);
+    int i;
+    for (i = 0; i < (<V_mode_nunits>/2); i++)
+      RTVEC_ELT (v, i) = GEN_INT ((<V_mode_nunits>/2) + i);
+
+    operands[2] = gen_rtx_PARALLEL (<MODE>mode, v);
+  }
+)
+
+;; vmovl[tb] are not available for V4SI on MVE
+(define_expand "vec_unpack<US>_lo_<mode>"
+  [(set (match_operand:<V_unpack> 0 "register_operand")
+	(SE:<V_unpack> (vec_select:<V_HALF>
+			 (match_operand:VU 1 "register_operand")
+			 (match_dup 2))))]
+ "ARM_HAVE_<MODE>_ARITH
+  && !TARGET_REALLY_IWMMXT
+  && ! (<MODE>mode == V4SImode && TARGET_HAVE_MVE)
+  && !BYTES_BIG_ENDIAN"
+  {
+    rtvec v = rtvec_alloc (<V_mode_nunits>/2);
+    int i;
+    for (i = 0; i < (<V_mode_nunits>/2) ; i++)
+      RTVEC_ELT (v, i) = GEN_INT (i);
+
+    operands[2] = gen_rtx_PARALLEL (<MODE>mode, v);
+
+  }
+)
+
+;; vmovn[tb] are not available for V2DI on MVE
+(define_expand "vec_pack_trunc_<mode>"
+ [(set (match_operand:<V_narrow_pack> 0 "register_operand")
+       (vec_concat:<V_narrow_pack>
+		(truncate:<V_narrow>
+			(match_operand:VN 1 "register_operand"))
+		(truncate:<V_narrow>
+			(match_operand:VN 2 "register_operand"))))]
+ "ARM_HAVE_<MODE>_ARITH
+  && !TARGET_REALLY_IWMMXT
+  && ! (<MODE>mode == V2DImode && TARGET_HAVE_MVE)
+  && !BYTES_BIG_ENDIAN"
+ {
+   if (TARGET_NEON)
+     {
+       emit_insn (gen_neon_quad_vec_pack_trunc_<mode> (operands[0], operands[1],
+						       operands[2]));
+     }
+   else
+     {
+       rtx tmpreg = gen_reg_rtx (<V_narrow_pack>mode);
+       emit_insn (gen_mve_vec_pack_trunc_lo (<MODE>mode, tmpreg, operands[1]));
+       emit_insn (gen_mve_vmovntq (VMOVNTQ_S, <MODE>mode,
+				   operands[0], tmpreg, operands[2]));
+     }
+   DONE;
+ }
+)
+
+(define_expand "vec_init<mode><V_elem_l>"
+  [(match_operand:VDQX 0 "s_register_operand")
+   (match_operand 1 "" "")]
+  "TARGET_NEON || (TARGET_HAVE_MVE && VALID_MVE_MODE (<MODE>mode))"
+{
+  neon_expand_vector_init (operands[0], operands[1]);
   DONE;
 })

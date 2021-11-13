@@ -918,25 +918,22 @@ get_normalized_constraints_from_decl (tree d, bool diag = false)
       tmpl = most_general_template (tmpl);
   }
 
+  d = tmpl ? tmpl : decl;
+
   /* If we're not diagnosing errors, use cached constraints, if any.  */
   if (!diag)
-    if (tree *p = hash_map_safe_get (normalized_map, tmpl))
+    if (tree *p = hash_map_safe_get (normalized_map, d))
       return *p;
 
   tree norm = NULL_TREE;
-  if (tree ci = get_constraints (decl))
+  if (tree ci = get_constraints (d))
     {
-      push_nested_class_guard pncs (DECL_CONTEXT (d));
-
-      temp_override<tree> ovr (current_function_decl);
-      if (TREE_CODE (decl) == FUNCTION_DECL)
-	current_function_decl = decl;
-
+      push_access_scope_guard pas (decl);
       norm = get_normalized_constraints_from_info (ci, tmpl, diag);
     }
 
   if (!diag)
-    hash_map_safe_put<hm_ggc> (normalized_map, tmpl, norm);
+    hash_map_safe_put<hm_ggc> (normalized_map, d, norm);
 
   return norm;
 }
@@ -2271,7 +2268,8 @@ tsubst_requires_expr (tree t, tree args, sat_info info)
   /* A requires-expression is an unevaluated context.  */
   cp_unevaluated u;
 
-  args = add_extra_args (REQUIRES_EXPR_EXTRA_ARGS (t), args);
+  args = add_extra_args (REQUIRES_EXPR_EXTRA_ARGS (t), args,
+			 info.complain, info.in_decl);
   if (processing_template_decl)
     {
       /* We're partially instantiating a generic lambda.  Substituting into
@@ -3065,6 +3063,15 @@ normalize_placeholder_type_constraints (tree t, bool diag)
      scope for this placeholder type; use them as the initial template
      parameters for normalization.  */
   tree initial_parms = TREE_PURPOSE (ci);
+
+  if (!initial_parms && TEMPLATE_TYPE_LEVEL (t) == 2)
+    /* This is a return-type-requirement of a non-templated requires-expression,
+       which are parsed under processing_template_decl == 1 and empty
+       current_template_parms; hence the 'auto' has level 2 and initial_parms
+       is empty.  Fix up initial_parms to be consistent with the value of
+       processing_template_decl whence the 'auto' was created.  */
+    initial_parms = build_tree_list (size_int (1), make_tree_vec (0));
+
   /* The 'auto' itself is used as the first argument in its own constraints,
      and its level is one greater than its template depth.  So in order to
      capture all used template parameters, we need to add an extra level of
@@ -3281,14 +3288,14 @@ constraint_satisfaction_value (tree t, tree args, sat_info info)
   else
     r = satisfy_nondeclaration_constraints (t, args, info);
   if (r == error_mark_node && info.quiet ()
-      && !(DECL_P (t) && TREE_NO_WARNING (t)))
+      && !(DECL_P (t) && warning_suppressed_p (t)))
     {
       /* Replay the error noisily.  */
       sat_info noisy (tf_warning_or_error, info.in_decl);
       constraint_satisfaction_value (t, args, noisy);
       if (DECL_P (t) && !args)
 	/* Avoid giving these errors again.  */
-	TREE_NO_WARNING (t) = true;
+	suppress_warning (t);
     }
   return r;
 }
@@ -3331,7 +3338,7 @@ evaluate_concept_check (tree check)
 }
 
 /* Evaluate the requires-expression T, returning either boolean_true_node
-   or boolean_false_node.  This is used during gimplification and constexpr
+   or boolean_false_node.  This is used during folding and constexpr
    evaluation.  */
 
 tree
@@ -3623,8 +3630,15 @@ diagnose_trait_expr (tree expr, tree args)
     case CPTK_IS_FINAL:
       inform (loc, "  %qT is not a final class", t1);
       break;
+    case CPTK_IS_LAYOUT_COMPATIBLE:
+      inform (loc, "  %qT is not layout compatible with %qT", t1, t2);
+      break;
     case CPTK_IS_LITERAL_TYPE:
       inform (loc, "  %qT is not a literal type", t1);
+      break;
+    case CPTK_IS_POINTER_INTERCONVERTIBLE_BASE_OF:
+      inform (loc, "  %qT is not pointer-interconvertible base of %qT",
+	      t1, t2);
       break;
     case CPTK_IS_POD:
       inform (loc, "  %qT is not a POD type", t1);

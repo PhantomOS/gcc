@@ -214,10 +214,8 @@ report_unroll (class loop *loop, dump_location_t locus)
 static void
 decide_unrolling (int flags)
 {
-  class loop *loop;
-
   /* Scan the loops, inner ones first.  */
-  FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+  for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
     {
       loop->lpt_decision.decision = LPT_NONE;
       dump_user_location_t locus = get_loop_location (loop);
@@ -278,14 +276,13 @@ decide_unrolling (int flags)
 void
 unroll_loops (int flags)
 {
-  class loop *loop;
   bool changed = false;
 
   /* Now decide rest of unrolling.  */
   decide_unrolling (flags);
 
   /* Scan the loops, inner ones first.  */
-  FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+  for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
     {
       /* And perform the appropriate transformations.  */
       switch (loop->lpt_decision.decision)
@@ -523,14 +520,11 @@ unroll_loop_constant_iterations (class loop *loop)
       if (exit_mod)
 	{
 	  opt_info_start_duplication (opt_info);
-          ok = duplicate_loop_to_header_edge (loop, loop_preheader_edge (loop),
-					      exit_mod,
-					      wont_exit, desc->out_edge,
-					      &remove_edges,
-					      DLTHE_FLAG_UPDATE_FREQ
-					      | (opt_info && exit_mod > 1
-						 ? DLTHE_RECORD_COPY_NUMBER
-						   : 0));
+	  ok = duplicate_loop_body_to_header_edge (
+	    loop, loop_preheader_edge (loop), exit_mod, wont_exit,
+	    desc->out_edge, &remove_edges,
+	    DLTHE_FLAG_UPDATE_FREQ
+	      | (opt_info && exit_mod > 1 ? DLTHE_RECORD_COPY_NUMBER : 0));
 	  gcc_assert (ok);
 
           if (opt_info && exit_mod > 1)
@@ -572,14 +566,11 @@ unroll_loop_constant_iterations (class loop *loop)
 	    bitmap_clear_bit (wont_exit, 1);
 
           opt_info_start_duplication (opt_info);
-	  ok = duplicate_loop_to_header_edge (loop, loop_preheader_edge (loop),
-					      exit_mod + 1,
-					      wont_exit, desc->out_edge,
-					      &remove_edges,
-					      DLTHE_FLAG_UPDATE_FREQ
-					      | (opt_info && exit_mod > 0
-						 ? DLTHE_RECORD_COPY_NUMBER
-						   : 0));
+	  ok = duplicate_loop_body_to_header_edge (
+	    loop, loop_preheader_edge (loop), exit_mod + 1, wont_exit,
+	    desc->out_edge, &remove_edges,
+	    DLTHE_FLAG_UPDATE_FREQ
+	      | (opt_info && exit_mod > 0 ? DLTHE_RECORD_COPY_NUMBER : 0));
 	  gcc_assert (ok);
 
           if (opt_info && exit_mod > 0)
@@ -609,14 +600,10 @@ unroll_loop_constant_iterations (class loop *loop)
   /* Now unroll the loop.  */
 
   opt_info_start_duplication (opt_info);
-  ok = duplicate_loop_to_header_edge (loop, loop_latch_edge (loop),
-				      max_unroll,
-				      wont_exit, desc->out_edge,
-				      &remove_edges,
-				      DLTHE_FLAG_UPDATE_FREQ
-				      | (opt_info
-					 ? DLTHE_RECORD_COPY_NUMBER
-					   : 0));
+  ok = duplicate_loop_body_to_header_edge (
+    loop, loop_latch_edge (loop), max_unroll, wont_exit, desc->out_edge,
+    &remove_edges,
+    DLTHE_FLAG_UPDATE_FREQ | (opt_info ? DLTHE_RECORD_COPY_NUMBER : 0));
   gcc_assert (ok);
 
   if (opt_info)
@@ -884,7 +871,7 @@ unroll_loop_runtime_iterations (class loop *loop)
 {
   rtx old_niter, niter, tmp;
   rtx_insn *init_code, *branch_code;
-  unsigned i, j;
+  unsigned i;
   profile_probability p;
   basic_block preheader, *body, swtch, ezc_swtch = NULL;
   int may_exit_copy;
@@ -908,15 +895,9 @@ unroll_loop_runtime_iterations (class loop *loop)
   body = get_loop_body (loop);
   for (i = 0; i < loop->num_nodes; i++)
     {
-      vec<basic_block> ldom;
-      basic_block bb;
-
-      ldom = get_dominated_by (CDI_DOMINATORS, body[i]);
-      FOR_EACH_VEC_ELT (ldom, j, bb)
+      for (basic_block bb : get_dominated_by (CDI_DOMINATORS, body[i]))
 	if (!flow_bb_inside_loop_p (loop, bb))
 	  dom_bbs.safe_push (bb);
-
-      ldom.release ();
     }
   free (body);
 
@@ -984,10 +965,10 @@ unroll_loop_runtime_iterations (class loop *loop)
       if (!desc->noloop_assumptions)
 	bitmap_set_bit (wont_exit, 1);
       ezc_swtch = loop_preheader_edge (loop)->src;
-      ok = duplicate_loop_to_header_edge (loop, loop_preheader_edge (loop),
-					  1, wont_exit, desc->out_edge,
-					  &remove_edges,
-					  DLTHE_FLAG_UPDATE_FREQ);
+      ok = duplicate_loop_body_to_header_edge (loop, loop_preheader_edge (loop),
+					       1, wont_exit, desc->out_edge,
+					       &remove_edges,
+					       DLTHE_FLAG_UPDATE_FREQ);
       gcc_assert (ok);
     }
 
@@ -1006,14 +987,14 @@ unroll_loop_runtime_iterations (class loop *loop)
       bitmap_clear (wont_exit);
       if (i != n_peel - 1 || !last_may_exit)
 	bitmap_set_bit (wont_exit, 1);
-      ok = duplicate_loop_to_header_edge (loop, loop_preheader_edge (loop),
-					  1, wont_exit, desc->out_edge,
-					  &remove_edges,
-					  DLTHE_FLAG_UPDATE_FREQ);
+      ok = duplicate_loop_body_to_header_edge (loop, loop_preheader_edge (loop),
+					       1, wont_exit, desc->out_edge,
+					       &remove_edges,
+					       DLTHE_FLAG_UPDATE_FREQ);
       gcc_assert (ok);
 
       /* Create item for switch.  */
-      j = n_peel - i - (extra_zero_check ? 0 : 1);
+      unsigned j = n_peel - i - (extra_zero_check ? 0 : 1);
       p = profile_probability::always ().apply_scale (1, i + 2);
 
       preheader = split_edge (loop_preheader_edge (loop));
@@ -1070,14 +1051,10 @@ unroll_loop_runtime_iterations (class loop *loop)
   bitmap_clear_bit (wont_exit, may_exit_copy);
   opt_info_start_duplication (opt_info);
 
-  ok = duplicate_loop_to_header_edge (loop, loop_latch_edge (loop),
-				      max_unroll,
-				      wont_exit, desc->out_edge,
-				      &remove_edges,
-				      DLTHE_FLAG_UPDATE_FREQ
-				      | (opt_info
-					 ? DLTHE_RECORD_COPY_NUMBER
-					   : 0));
+  ok = duplicate_loop_body_to_header_edge (
+    loop, loop_latch_edge (loop), max_unroll, wont_exit, desc->out_edge,
+    &remove_edges,
+    DLTHE_FLAG_UPDATE_FREQ | (opt_info ? DLTHE_RECORD_COPY_NUMBER : 0));
   gcc_assert (ok);
 
   if (opt_info)
@@ -1264,13 +1241,9 @@ unroll_loop_stupid (class loop *loop)
   bitmap_clear (wont_exit);
   opt_info_start_duplication (opt_info);
 
-  ok = duplicate_loop_to_header_edge (loop, loop_latch_edge (loop),
-				      nunroll, wont_exit,
-				      NULL, NULL,
-				      DLTHE_FLAG_UPDATE_FREQ
-				      | (opt_info
-					 ? DLTHE_RECORD_COPY_NUMBER
-					   : 0));
+  ok = duplicate_loop_body_to_header_edge (
+    loop, loop_latch_edge (loop), nunroll, wont_exit, NULL, NULL,
+    DLTHE_FLAG_UPDATE_FREQ | (opt_info ? DLTHE_RECORD_COPY_NUMBER : 0));
   gcc_assert (ok);
 
   if (opt_info)
@@ -2028,7 +2001,7 @@ apply_opt_in_copies (struct opt_info *opt_info,
       orig_bb = get_bb_original (bb);
 
       /* bb->aux holds position in copy sequence initialized by
-	 duplicate_loop_to_header_edge.  */
+	 duplicate_loop_body_to_header_edge.  */
       delta = determine_split_iv_delta ((size_t)bb->aux, n_copies,
 					unrolling);
       bb->aux = 0;

@@ -53,6 +53,9 @@ typedef struct gfc_se
      here.  */
   tree class_vptr;
 
+  /* Whether expr is a reference to an unlimited polymorphic object.  */
+  unsigned unlimited_polymorphic:1;
+  
   /* If set gfc_conv_variable will return an expression for the array
      descriptor. When set, want_pointer should also be set.
      If not set scalarizing variables will be substituted.  */
@@ -422,7 +425,6 @@ tree gfc_class_set_static_fields (tree, tree, tree);
 tree gfc_class_data_get (tree);
 tree gfc_class_vptr_get (tree);
 tree gfc_class_len_get (tree);
-tree gfc_class_len_or_zero_get (tree);
 tree gfc_resize_class_size_with_len (stmtblock_t *, tree, tree);
 gfc_expr * gfc_find_and_cut_at_last_class_ref (gfc_expr *, bool is_mold = false,
 					       gfc_typespec **ts = NULL);
@@ -430,14 +432,12 @@ gfc_expr * gfc_find_and_cut_at_last_class_ref (gfc_expr *, bool is_mold = false,
    available.  */
 tree gfc_class_vtab_hash_get (tree);
 tree gfc_class_vtab_size_get (tree);
-tree gfc_class_vtab_extends_get (tree);
 tree gfc_class_vtab_def_init_get (tree);
 tree gfc_class_vtab_copy_get (tree);
 tree gfc_class_vtab_final_get (tree);
 /* Get an accessor to the vtab's * field, when a vptr handle is present.  */
-tree gfc_vtpr_hash_get (tree);
+tree gfc_vptr_hash_get (tree);
 tree gfc_vptr_size_get (tree);
-tree gfc_vptr_extends_get (tree);
 tree gfc_vptr_def_init_get (tree);
 tree gfc_vptr_copy_get (tree);
 tree gfc_vptr_final_get (tree);
@@ -447,7 +447,6 @@ void gfc_reset_len (stmtblock_t *, gfc_expr *);
 tree gfc_get_class_from_gfc_expr (gfc_expr *);
 tree gfc_get_class_from_expr (tree);
 tree gfc_get_vptr_from_expr (tree);
-tree gfc_get_class_array_ref (tree, tree, tree, bool);
 tree gfc_copy_class_to_class (tree, tree, tree, bool);
 bool gfc_add_finalizer_call (stmtblock_t *, gfc_expr *);
 bool gfc_add_comp_finalizer_call (stmtblock_t *, tree, gfc_component *, bool);
@@ -506,6 +505,7 @@ void gfc_conv_expr_type (gfc_se * se, gfc_expr *, tree);
 
 
 /* trans-expr.c */
+tree gfc_get_character_len_in_bytes (tree);
 tree gfc_conv_scalar_to_descriptor (gfc_se *, tree, symbol_attribute);
 tree gfc_get_ultimate_alloc_ptr_comps_caf_token (gfc_se *, gfc_expr *);
 void gfc_conv_scalar_char_value (gfc_symbol *sym, gfc_se *se, gfc_expr **expr);
@@ -513,6 +513,8 @@ tree gfc_string_to_single_character (tree len, tree str, int kind);
 tree gfc_get_tree_for_caf_expr (gfc_expr *);
 void gfc_get_caf_token_offset (gfc_se*, tree *, tree *, tree, tree, gfc_expr *);
 tree gfc_caf_get_image_index (stmtblock_t *, gfc_expr *, tree);
+void gfc_simple_for_loop (stmtblock_t *, tree, tree, tree, enum tree_code, tree,
+			  tree);
 
 /* Find the decl containing the auxiliary variables for assigned variables.  */
 void gfc_conv_label_variable (gfc_se * se, gfc_expr * expr);
@@ -613,9 +615,6 @@ tree gfc_get_label_decl (gfc_st_label *);
 tree gfc_get_extern_function_decl (gfc_symbol *,
 				   gfc_actual_arglist *args = NULL,
 				   const char *fnspec = NULL);
-
-/* Return the decl for a function.  */
-tree gfc_get_function_decl (gfc_symbol *);
 
 /* Build an ADDR_EXPR.  */
 tree gfc_build_addr_expr (tree, tree);
@@ -818,7 +817,9 @@ tree gfc_omp_clause_assign_op (tree, tree, tree);
 tree gfc_omp_clause_linear_ctor (tree, tree, tree, tree);
 tree gfc_omp_clause_dtor (tree, tree);
 void gfc_omp_finish_clause (tree, gimple_seq *, bool);
-bool gfc_omp_scalar_p (tree);
+bool gfc_omp_allocatable_p (tree);
+bool gfc_omp_scalar_p (tree, bool);
+bool gfc_omp_scalar_target_p (tree);
 bool gfc_omp_disregard_value_expr (tree, bool);
 bool gfc_omp_private_debug_clause (tree, bool);
 bool gfc_omp_private_outer_ref (tree);
@@ -848,8 +849,6 @@ extern GTY(()) tree gfor_fndecl_ctime;
 extern GTY(()) tree gfor_fndecl_fdate;
 extern GTY(()) tree gfor_fndecl_in_pack;
 extern GTY(()) tree gfor_fndecl_in_unpack;
-extern GTY(()) tree gfor_fndecl_cfi_to_gfc;
-extern GTY(()) tree gfor_fndecl_gfc_to_cfi;
 extern GTY(()) tree gfor_fndecl_associated;
 extern GTY(()) tree gfor_fndecl_system_clock4;
 extern GTY(()) tree gfor_fndecl_system_clock8;
@@ -951,8 +950,6 @@ extern GTY(()) tree gfor_fndecl_convert_char1_to_char4;
 extern GTY(()) tree gfor_fndecl_convert_char4_to_char1;
 
 /* Other misc. runtime library functions.  */
-extern GTY(()) tree gfor_fndecl_size0;
-extern GTY(()) tree gfor_fndecl_size1;
 extern GTY(()) tree gfor_fndecl_iargc;
 extern GTY(()) tree gfor_fndecl_kill;
 extern GTY(()) tree gfor_fndecl_kill_sub;
@@ -1025,6 +1022,7 @@ struct GTY(()) lang_decl {
   tree token, caf_offset;
   unsigned int scalar_allocatable : 1;
   unsigned int scalar_pointer : 1;
+  unsigned int scalar_target : 1;
   unsigned int optional_arg : 1;
 };
 
@@ -1039,12 +1037,16 @@ struct GTY(()) lang_decl {
   (DECL_LANG_SPECIFIC (node)->scalar_allocatable)
 #define GFC_DECL_SCALAR_POINTER(node) \
   (DECL_LANG_SPECIFIC (node)->scalar_pointer)
+#define GFC_DECL_SCALAR_TARGET(node) \
+  (DECL_LANG_SPECIFIC (node)->scalar_target)
 #define GFC_DECL_OPTIONAL_ARGUMENT(node) \
   (DECL_LANG_SPECIFIC (node)->optional_arg)
 #define GFC_DECL_GET_SCALAR_ALLOCATABLE(node) \
   (DECL_LANG_SPECIFIC (node) ? GFC_DECL_SCALAR_ALLOCATABLE (node) : 0)
 #define GFC_DECL_GET_SCALAR_POINTER(node) \
   (DECL_LANG_SPECIFIC (node) ? GFC_DECL_SCALAR_POINTER (node) : 0)
+#define GFC_DECL_GET_SCALAR_TARGET(node) \
+  (DECL_LANG_SPECIFIC (node) ? GFC_DECL_SCALAR_TARGET (node) : 0)
 #define GFC_DECL_PACKED_ARRAY(node) DECL_LANG_FLAG_0(node)
 #define GFC_DECL_PARTIAL_PACKED_ARRAY(node) DECL_LANG_FLAG_1(node)
 #define GFC_DECL_ASSIGN(node) DECL_LANG_FLAG_2(node)
@@ -1161,15 +1163,12 @@ void gfc_init_interface_mapping (gfc_interface_mapping *);
 void gfc_free_interface_mapping (gfc_interface_mapping *);
 void gfc_add_interface_mapping (gfc_interface_mapping *,
 				gfc_symbol *, gfc_se *, gfc_expr *);
-void gfc_finish_interface_mapping (gfc_interface_mapping *,
-				   stmtblock_t *, stmtblock_t *);
 void gfc_apply_interface_mapping (gfc_interface_mapping *,
 				  gfc_se *, gfc_expr *);
 
 
 /* Standard error messages used in all the trans-*.c files.  */
 extern const char gfc_msg_fault[];
-extern const char gfc_msg_wrong_return[];
 
 #define OMPWS_WORKSHARE_FLAG	1	/* Set if in a workshare construct.  */
 #define OMPWS_CURR_SINGLEUNIT	2	/* Set if current gfc_code in workshare

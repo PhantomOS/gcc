@@ -383,8 +383,10 @@ simple_move (rtx_insn *insn, bool speed_p)
      non-integer mode for which there is no integer mode of the same
      size.  */
   mode = GET_MODE (SET_DEST (set));
+  scalar_int_mode int_mode;
   if (!SCALAR_INT_MODE_P (mode)
-      && !int_mode_for_size (GET_MODE_BITSIZE (mode), 0).exists ())
+      && (!int_mode_for_size (GET_MODE_BITSIZE (mode), 0).exists (&int_mode)
+	  || !targetm.modes_tieable_p (mode, int_mode)))
     return NULL_RTX;
 
   /* Reject PARTIAL_INT modes.  They are used for processor specific
@@ -1731,14 +1733,9 @@ decompose_multiword_subregs (bool decompose_copies)
 	}
     }
 
-  {
-    unsigned int i;
-    bitmap b;
-
-    FOR_EACH_VEC_ELT (reg_copy_graph, i, b)
-      if (b)
-	BITMAP_FREE (b);
-  }
+  for (bitmap b : reg_copy_graph)
+    if (b)
+      BITMAP_FREE (b);
 
   reg_copy_graph.release ();
 

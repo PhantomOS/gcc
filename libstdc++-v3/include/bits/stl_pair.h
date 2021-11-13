@@ -56,12 +56,12 @@
 #ifndef _STL_PAIR_H
 #define _STL_PAIR_H 1
 
-#include <bits/move.h> // for std::move / std::forward, and std::swap
-
 #if __cplusplus >= 201103L
-# include <type_traits> // for std::__decay_and_strip, std::is_reference_v
+# include <type_traits>    // for std::__decay_and_strip
+# include <bits/move.h>    // for std::move / std::forward, and std::swap
+# include <bits/utility.h> // for std::tuple_element, std::tuple_size
 #endif
-#if __cplusplus > 201703L
+#if __cplusplus >= 202002L
 # include <compare>
 # define __cpp_lib_constexpr_utility 201811L
 #endif
@@ -129,15 +129,14 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 		      is_convertible<_U2&&, _T2>>::value;
       }
 
-
       template <bool __implicit, typename _U1, typename _U2>
       static constexpr bool _DeprConsPair()
       {
 	using __do_converts = __and_<is_convertible<_U1&&, _T1>,
 				     is_convertible<_U2&&, _T2>>;
-	using __converts = typename conditional<__implicit,
-						__do_converts,
-						__not_<__do_converts>>::type;
+	using __converts = __conditional_t<__implicit,
+					   __do_converts,
+					   __not_<__do_converts>>;
 	return __and_<is_constructible<_T1, _U1&&>,
 		      is_constructible<_T2, _U2&&>,
 		      __converts
@@ -561,10 +560,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	  second(std::forward<_U2>(__p.second)) { }
 
       pair&
-      operator=(typename conditional<
-		__and_<is_copy_assignable<_T1>,
-		       is_copy_assignable<_T2>>::value,
-		const pair&, const __nonesuch&>::type __p)
+      operator=(__conditional_t<__and_<is_copy_assignable<_T1>,
+				       is_copy_assignable<_T2>>::value,
+				const pair&, const __nonesuch&> __p)
       {
 	first = __p.first;
 	second = __p.second;
@@ -572,10 +570,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       }
 
       pair&
-      operator=(typename conditional<
-		__and_<is_move_assignable<_T1>,
-		       is_move_assignable<_T2>>::value,
-		pair&&, __nonesuch&&>::type __p)
+      operator=(__conditional_t<__and_<is_move_assignable<_T1>,
+				       is_move_assignable<_T2>>::value,
+				pair&&, __nonesuch&&> __p)
       noexcept(__and_<is_nothrow_move_assignable<_T1>,
 		      is_nothrow_move_assignable<_T2>>::value)
       {
@@ -751,6 +748,161 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 #endif
 
   /// @}
+
+#if __cplusplus >= 201103L
+  // Various functions which give std::pair a tuple-like interface.
+
+  template<typename _T1, typename _T2>
+    struct __is_tuple_like_impl<pair<_T1, _T2>> : true_type
+    { };
+
+  /// Partial specialization for std::pair
+  template<class _Tp1, class _Tp2>
+    struct tuple_size<pair<_Tp1, _Tp2>>
+    : public integral_constant<size_t, 2> { };
+
+  /// Partial specialization for std::pair
+  template<class _Tp1, class _Tp2>
+    struct tuple_element<0, pair<_Tp1, _Tp2>>
+    { typedef _Tp1 type; };
+
+  /// Partial specialization for std::pair
+  template<class _Tp1, class _Tp2>
+    struct tuple_element<1, pair<_Tp1, _Tp2>>
+    { typedef _Tp2 type; };
+
+#if __cplusplus >= 201703L
+  template<typename _Tp1, typename _Tp2>
+    inline constexpr size_t tuple_size_v<pair<_Tp1, _Tp2>> = 2;
+
+  template<typename _Tp1, typename _Tp2>
+    inline constexpr size_t tuple_size_v<const pair<_Tp1, _Tp2>> = 2;
+#endif
+
+  /// @cond undocumented
+  template<size_t _Int>
+    struct __pair_get;
+
+  template<>
+    struct __pair_get<0>
+    {
+      template<typename _Tp1, typename _Tp2>
+	static constexpr _Tp1&
+	__get(pair<_Tp1, _Tp2>& __pair) noexcept
+	{ return __pair.first; }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr _Tp1&&
+	__move_get(pair<_Tp1, _Tp2>&& __pair) noexcept
+	{ return std::forward<_Tp1>(__pair.first); }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr const _Tp1&
+	__const_get(const pair<_Tp1, _Tp2>& __pair) noexcept
+	{ return __pair.first; }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr const _Tp1&&
+	__const_move_get(const pair<_Tp1, _Tp2>&& __pair) noexcept
+	{ return std::forward<const _Tp1>(__pair.first); }
+    };
+
+  template<>
+    struct __pair_get<1>
+    {
+      template<typename _Tp1, typename _Tp2>
+	static constexpr _Tp2&
+	__get(pair<_Tp1, _Tp2>& __pair) noexcept
+	{ return __pair.second; }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr _Tp2&&
+	__move_get(pair<_Tp1, _Tp2>&& __pair) noexcept
+	{ return std::forward<_Tp2>(__pair.second); }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr const _Tp2&
+	__const_get(const pair<_Tp1, _Tp2>& __pair) noexcept
+	{ return __pair.second; }
+
+      template<typename _Tp1, typename _Tp2>
+	static constexpr const _Tp2&&
+	__const_move_get(const pair<_Tp1, _Tp2>&& __pair) noexcept
+	{ return std::forward<const _Tp2>(__pair.second); }
+    };
+  /// @endcond
+
+  /** @{
+   * std::get overloads for accessing members of std::pair
+   */
+
+  template<size_t _Int, class _Tp1, class _Tp2>
+    constexpr typename tuple_element<_Int, pair<_Tp1, _Tp2>>::type&
+    get(pair<_Tp1, _Tp2>& __in) noexcept
+    { return __pair_get<_Int>::__get(__in); }
+
+  template<size_t _Int, class _Tp1, class _Tp2>
+    constexpr typename tuple_element<_Int, pair<_Tp1, _Tp2>>::type&&
+    get(pair<_Tp1, _Tp2>&& __in) noexcept
+    { return __pair_get<_Int>::__move_get(std::move(__in)); }
+
+  template<size_t _Int, class _Tp1, class _Tp2>
+    constexpr const typename tuple_element<_Int, pair<_Tp1, _Tp2>>::type&
+    get(const pair<_Tp1, _Tp2>& __in) noexcept
+    { return __pair_get<_Int>::__const_get(__in); }
+
+  template<size_t _Int, class _Tp1, class _Tp2>
+    constexpr const typename tuple_element<_Int, pair<_Tp1, _Tp2>>::type&&
+    get(const pair<_Tp1, _Tp2>&& __in) noexcept
+    { return __pair_get<_Int>::__const_move_get(std::move(__in)); }
+
+#if __cplusplus >= 201402L
+
+#define __cpp_lib_tuples_by_type 201304L
+
+  template <typename _Tp, typename _Up>
+    constexpr _Tp&
+    get(pair<_Tp, _Up>& __p) noexcept
+    { return __p.first; }
+
+  template <typename _Tp, typename _Up>
+    constexpr const _Tp&
+    get(const pair<_Tp, _Up>& __p) noexcept
+    { return __p.first; }
+
+  template <typename _Tp, typename _Up>
+    constexpr _Tp&&
+    get(pair<_Tp, _Up>&& __p) noexcept
+    { return std::move(__p.first); }
+
+  template <typename _Tp, typename _Up>
+    constexpr const _Tp&&
+    get(const pair<_Tp, _Up>&& __p) noexcept
+    { return std::move(__p.first); }
+
+  template <typename _Tp, typename _Up>
+    constexpr _Tp&
+    get(pair<_Up, _Tp>& __p) noexcept
+    { return __p.second; }
+
+  template <typename _Tp, typename _Up>
+    constexpr const _Tp&
+    get(const pair<_Up, _Tp>& __p) noexcept
+    { return __p.second; }
+
+  template <typename _Tp, typename _Up>
+    constexpr _Tp&&
+    get(pair<_Up, _Tp>&& __p) noexcept
+    { return std::move(__p.second); }
+
+  template <typename _Tp, typename _Up>
+    constexpr const _Tp&&
+    get(const pair<_Up, _Tp>&& __p) noexcept
+    { return std::move(__p.second); }
+
+#endif // C++14
+  /// @}
+#endif // C++11
 
 _GLIBCXX_END_NAMESPACE_VERSION
 } // namespace std

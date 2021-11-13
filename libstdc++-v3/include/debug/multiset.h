@@ -32,7 +32,7 @@
 #include <debug/safe_sequence.h>
 #include <debug/safe_container.h>
 #include <debug/safe_iterator.h>
-#include <utility>
+#include <bits/stl_pair.h>
 
 namespace std _GLIBCXX_VISIBILITY(default)
 {
@@ -113,10 +113,11 @@ namespace __debug
       multiset(const allocator_type& __a)
       : _Base(__a) { }
 
-      multiset(const multiset& __m, const allocator_type& __a)
+      multiset(const multiset& __m,
+	       const __type_identity_t<allocator_type>& __a)
       : _Base(__m, __a) { }
 
-      multiset(multiset&& __m, const allocator_type& __a)
+      multiset(multiset&& __m, const __type_identity_t<allocator_type>& __a)
       noexcept( noexcept(_Base(std::move(__m._M_base()), __a)) )
       : _Safe(std::move(__m._M_safe()), __a),
 	_Base(std::move(__m._M_base()), __a) { }
@@ -151,15 +152,7 @@ namespace __debug
       multiset(_Base_ref __x)
       : _Base(__x._M_ref) { }
 
-#if __cplusplus < 201103L
-      multiset&
-      operator=(const multiset& __x)
-      {
-	this->_M_safe() = __x;
-	_M_base() = __x;
-	return *this;
-      }
-#else
+#if __cplusplus >= 201103L
       multiset&
       operator=(const multiset&) = default;
 

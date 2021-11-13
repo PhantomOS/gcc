@@ -184,6 +184,10 @@ private
    --  Raise_Exception_Always if it can determine this is the case. The Export
    --  allows this routine to be accessed from Pure units.
 
+   pragma Machine_Attribute (Raise_Exception_Always,
+                             "strub", "callable");
+   --  Make it callable from strub contexts
+
    procedure Raise_From_Controlled_Operation (X : Exception_Occurrence);
    pragma No_Return (Raise_From_Controlled_Operation);
    pragma Export
