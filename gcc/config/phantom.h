@@ -44,8 +44,13 @@
 
 
 #undef LIB_SPEC
+#if PHANTOMOS_HOSTED
 #define LIB_SPEC \
 "%{!nostdlib:%{!nodefaultlibs:--start-group -lc -lgcc --end-group}}"
+#else 
+#define LIB_SPEC \
+"%{!nostdlib:%{!nodefaultlibs:--start-group -lgcc --end-group}}"
+#endif 
 
 #undef STDINT_LONG32
 #define STDINT_LONG32 (INT_TYPE_SIZE != 32 && LONG_TYPE_SIZE == 32)

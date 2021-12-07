@@ -1886,6 +1886,14 @@ x86_64-*-elf*)
 	tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h newlib-stdint.h i386/i386elf.h i386/x86-64.h"
 	;;
 x86_64-*-phantom*)
+	case ${target} in
+		*-*-*-kernel )
+			tm_defines="${tm_defines} PHANTOMOS_HOSTED=0"
+		;;
+		* )
+			tm_defines="${tm_defines} PHANTOMOS_HOSTED=1"
+		;;
+	esac
 	tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h newlib-stdint.h i386/i386elf.h i386/x86-64.h phantom.h"
 	;;
 x86_64-*-rtems*)
